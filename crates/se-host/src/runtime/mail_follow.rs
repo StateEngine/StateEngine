@@ -182,3 +182,33 @@ async fn send(
         .reply_part(&response, &deadline, terminal)
         .await
 }
+
+impl AdmittedExchange {
+    /// Stream one bounded part of a long-lived reply with cancellation at the write boundary.
+    pub(crate) async fn reply_stream_part_cancellable<F>(
+        &mut self,
+        output: Result<OperationOutput>,
+        max_bytes: usize,
+        terminal: bool,
+        cancel: F,
+    ) -> Result<crate::ipc::StreamWriteOutcome>
+    where
+        F: std::future::Future<Output = ()> + Unpin,
+    {
+        let result = match output {
+            Ok(value) => IpcResult::Output(Box::new(value)),
+            Err(error) => IpcResult::Error(super::route::envelope(&error)?),
+        };
+        let response = IpcResponse {
+            version: se_types::API_VERSION,
+            request_id: self.request_id,
+            generation: self.connection.connection.negotiated().generation,
+            result,
+        };
+        let deadline = super::serve::options(Duration::from_secs(5))?;
+        self.connection
+            .connection
+            .reply_part_cancellable(&response, &deadline, max_bytes, terminal, cancel)
+            .await
+    }
+}

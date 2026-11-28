@@ -96,7 +96,10 @@ pub(crate) fn exchange_output(
 ) -> Result<OperationOutput> {
     let keyed = match &call.request {
         IpcRequest::Operation(op) => op.key.as_ref().map(|k| (op.name.clone(), k.clone())),
-        IpcRequest::Hook(_) | IpcRequest::Adopt(_) | IpcRequest::External(_) => None,
+        IpcRequest::Hook(_)
+        | IpcRequest::Adopt(_)
+        | IpcRequest::External(_)
+        | IpcRequest::Subscribe(_) => None,
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => input
             .key()
@@ -190,6 +193,7 @@ fn call_operation(call: &IpcEnvelope) -> &str {
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(_) => "remote authority control",
         IpcRequest::External(_) => "external seat",
+        IpcRequest::Subscribe(_) => "events.subscribe",
     }
 }
 fn invalid(expected: &str) -> SeError {

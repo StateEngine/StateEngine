@@ -209,7 +209,7 @@ impl AdmissionContext {
     }
     /// One native caller check shared by ordinary operations and the closed
     /// remote Owner controls. The latter still require actual human presence.
-    fn caller(
+    pub(crate) fn caller(
         &self,
         phase: &mut se_store::ReadPhase,
         peer: &PeerProof,

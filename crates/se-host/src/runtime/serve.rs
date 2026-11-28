@@ -310,6 +310,10 @@ async fn connection_loop(
             connection = returned;
             continue;
         }
+        if let Some(sub) = exchange.take_subscribe() {
+            crate::events::stream::serve(router, exchange, sub, shutdown).await?;
+            return Ok(ConnectionEnd::Closed);
+        }
         if let Some(input) = exchange.adopted.take() {
             let output = router.execute_adoption(input, &deadline).await;
             connection = exchange.reply_adoption(output, &deadline).await?;

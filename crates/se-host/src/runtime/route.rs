@@ -63,6 +63,7 @@ pub struct AdmittedExchange {
     #[cfg(feature = "remote")]
     owner: Option<crate::remote::OwnerCall>,
     external: Option<super::admission::external::ExternalCall>,
+    subscribe: Option<crate::events::AdmittedSubscribe>,
     admission: Option<se_core::ops::HostPhaseSpan>,
     admitted_at: Instant,
 }
@@ -276,6 +277,7 @@ impl HostedRouter {
                 let mut owner = None;
                 let mut adopted = None;
                 let mut external = None;
+                let mut subscribe = None;
                 let call = match call {
                     Ok(RouteChoice::Adopt(call)) => {
                         adopted = Some(*call);
@@ -290,6 +292,10 @@ impl HostedRouter {
                         external = Some(*call);
                         None
                     }
+                    Ok(RouteChoice::Subscribe(call)) => {
+                        subscribe = Some(*call);
+                        None
+                    }
                     Ok(RouteChoice::Core(call)) => Some(Ok(*call)),
                     Err(error) => Some(Err(error)),
                 };
@@ -302,6 +308,7 @@ impl HostedRouter {
                     #[cfg(feature = "remote")]
                     owner,
                     external,
+                    subscribe,
                     admission: None,
                     admitted_at,
                 }))
@@ -320,7 +327,7 @@ impl HostedConnection {
     }
 }
 impl AdmittedExchange {
-    pub(super) async fn wait_for_peer_close(&self) -> Result<()> {
+    pub(crate) async fn wait_for_peer_close(&self) -> Result<()> {
         self.connection.connection.wait_for_peer_close().await
     }
 
@@ -338,6 +345,9 @@ impl AdmittedExchange {
     }
     pub(crate) fn take_external(&mut self) -> Option<super::admission::external::ExternalCall> {
         self.external.take()
+    }
+    pub(crate) fn take_subscribe(&mut self) -> Option<crate::events::AdmittedSubscribe> {
+        self.subscribe.take()
     }
     pub(crate) async fn reply_external(
         self,
@@ -490,6 +500,7 @@ enum RouteChoice {
     Owner(Box<crate::remote::OwnerCall>),
     Core(Box<RoutedCall>),
     External(Box<super::admission::external::ExternalCall>),
+    Subscribe(Box<crate::events::AdmittedSubscribe>),
 }
 /// The authenticated frame fields shared by the terminal-scoped routes.
 /// Each resolves to its own call kind and never reaches the core decoder.
@@ -571,6 +582,25 @@ fn route(
                 *input,
             )?;
             return Ok(RouteChoice::External(Box::new(call)));
+        }
+        IpcRequest::Subscribe(input) => {
+            let call = crate::events::admit::admit_subscribe(
+                context,
+                crate::events::admit::SubscribeIngress {
+                    peer: connection.connection.peer(),
+                    connection: connection.connection.connection_authority(),
+                    override_authority: wire.authority.as_ref(),
+                    grant: &connection.grant,
+                    presence: wire.presence.as_ref(),
+                    negotiated_max_bytes: connection
+                        .connection
+                        .negotiated()
+                        .maximum_reply_bytes
+                        .get(),
+                },
+                *input,
+            )?;
+            return Ok(RouteChoice::Subscribe(Box::new(call)));
         }
         IpcRequest::Operation(raw) => {
             if raw.name == "hook.claude" {

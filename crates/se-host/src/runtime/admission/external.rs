@@ -463,6 +463,35 @@ impl AdmissionContext {
         }
     }
 
+    pub(crate) fn verify_session(
+        &self,
+        phase: &se_store::ReadPhase,
+        secret: &se_types::Secret,
+    ) -> Result<Admission> {
+        self.session(phase, secret)
+    }
+
+    pub(crate) fn credential_record_id(
+        &self,
+        phase: &se_store::ReadPhase,
+        secret: &se_types::Secret,
+    ) -> Result<se_store::RecordId> {
+        let hash: [u8; 32] = Hasher::digest(secret.expose()).into();
+        match phase.credential(hash).map_err(|e| store_error(&e))? {
+            Read::Present { value } => Ok(value.credential),
+            Read::Absent { .. } => Err(SeError::invalid(
+                "session credential",
+                "a present active session credential",
+            )),
+            Read::Unreadable { reason, .. } => {
+                Err(se_core::scope::unreadable("session credential", &reason))
+            }
+            Read::Unknown { what, .. } => {
+                Err(se_core::scope::unreadable("session credential", &what))
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn require_external_owner(
         &self,

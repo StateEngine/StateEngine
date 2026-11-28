@@ -10,6 +10,14 @@ pub struct IpcConnection {
     pub(super) awaiting: Option<u64>,
     pub(super) _connection_slot: tokio::sync::OwnedSemaphorePermit,
 }
+/// Outcome of a cancellable bounded stream frame write.
+pub(crate) enum StreamWriteOutcome {
+    Sent,
+    CancelledBeforeWrite,
+    InterruptedPartial,
+    Oversize { exact_bytes: usize },
+}
+
 impl IpcConnection {
     /// Only while a cancellable read owns the outstanding request. A caller
     /// cannot pipeline another frame before its response; EOF retires the read.
@@ -133,6 +141,24 @@ impl IpcConnection {
         deadline: &Deadline,
         terminal: bool,
     ) -> Result<()> {
+        let max_bytes = self.hello.maximum_reply_bytes.get() as usize;
+        self.reply_part_bounded(response, deadline, max_bytes, terminal)
+            .await
+    }
+    /// Encode once against `min(negotiated, max_bytes)` and write a single stream frame,
+    /// interrupting cleanly on `cancel`. If partial bytes were already written, the
+    /// underlying socket is dropped immediately so no terminal frame is appended to them.
+    pub(crate) async fn reply_part_cancellable<F>(
+        &mut self,
+        response: &IpcResponse,
+        deadline: &Deadline,
+        max_bytes: usize,
+        terminal: bool,
+        cancel: F,
+    ) -> Result<StreamWriteOutcome>
+    where
+        F: std::future::Future<Output = ()> + Unpin,
+    {
         if self.awaiting != Some(response.request_id)
             || response.version != self.hello.version
             || response.generation != self.hello.generation
@@ -142,16 +168,68 @@ impl IpcConnection {
                 "the exact outstanding request ID, API and generation",
             ));
         }
-        let frame = wire::encode_response(response, self.hello.maximum_reply_bytes.get() as usize)?;
+        let limit = (self.hello.maximum_reply_bytes.get() as usize).min(max_bytes);
+        let frame = match wire::encode_response_checked(response, limit)? {
+            Ok(frame) => frame,
+            Err(exact_bytes) => return Ok(StreamWriteOutcome::Oversize { exact_bytes }),
+        };
         let stream = self
             .stream
             .take()
             .ok_or_else(|| SeError::invalid("IPC channel", "a complete prior exchange"))?;
-        send(&stream, &frame, &deadline.stage(WRITE_TIMEOUT)?).await?;
-        if terminal {
-            self.awaiting = None;
+        match super::channel::send_cancellable(
+            &stream,
+            &frame,
+            &deadline.stage(WRITE_TIMEOUT)?,
+            cancel,
+        )
+        .await?
+        {
+            super::channel::SendOutcome::Sent => {
+                if terminal {
+                    self.awaiting = None;
+                }
+                self.stream = Some(stream);
+                Ok(StreamWriteOutcome::Sent)
+            }
+            super::channel::SendOutcome::CancelledBeforeWrite => {
+                self.stream = Some(stream);
+                Ok(StreamWriteOutcome::CancelledBeforeWrite)
+            }
+            super::channel::SendOutcome::InterruptedPartial => {
+                self.awaiting = None;
+                drop(stream);
+                Ok(StreamWriteOutcome::InterruptedPartial)
+            }
         }
-        self.stream = Some(stream);
-        Ok(())
+    }
+
+    /// Encode once against `min(negotiated, max_bytes)` and write a single stream frame.
+    pub(crate) async fn reply_part_bounded(
+        &mut self,
+        response: &IpcResponse,
+        deadline: &Deadline,
+        max_bytes: usize,
+        terminal: bool,
+    ) -> Result<()> {
+        match self
+            .reply_part_cancellable(
+                response,
+                deadline,
+                max_bytes,
+                terminal,
+                std::future::pending(),
+            )
+            .await?
+        {
+            StreamWriteOutcome::Sent => Ok(()),
+            StreamWriteOutcome::Oversize { .. } => Err(SeError::invalid(
+                "IPC reply",
+                "complete JSON within the negotiated byte budget",
+            )),
+            StreamWriteOutcome::CancelledBeforeWrite | StreamWriteOutcome::InterruptedPartial => {
+                Err(SeError::invalid("IPC reply", "a completed write"))
+            }
+        }
     }
 }
