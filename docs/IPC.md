@@ -171,6 +171,7 @@ If authentication and admission succeed, the host replies with `ServerHello` (or
   - `store_id`: The host's persistent SQLite store identifier (`store_...`, `1..=128` UTF-8 bytes), stable across host restarts. Omitted if unavailable.
   - `capabilities`: Exact list of optional capabilities supported by this host binary. Hosts never advertise unimplemented capabilities.
     - `"ipc.capabilities"`: Capability negotiation handshake is supported.
+    - `"events.subscribe"`: Cursor-resumable push event stream (`IpcRequest::Subscribe`) is supported.
 
 ---
 
@@ -205,6 +206,7 @@ After `ServerHello`, the connection enters a sequential request/response loop (o
 - `request`: Tagged union (`kind` + `input`):
   - `"operation"`: `{ "name": "<op>", "arguments": { ... }, "key": "<idempotency-key>" | null }`
   - `"external"`: External seat lifecycle and blocking mail wait (`claim_open`, `claim_wait`, `list`, `approve`, `revoke`, `mail_wait`).
+  - `"subscribe"`: Cursor-resumable push event stream (`SubscribeRequest`, see Section 5).
   - `"adopt"` / `"hook"` / `"remote_owner"`: Specialized CLI/hook/remote control requests.
 
 ### Idempotency Keys
@@ -261,7 +263,41 @@ Error (`state: "error"`):
 
 ---
 
-## 5. Operation Schemas
+## 5. Push Event Stream (`events.subscribe`)
+
+When `ServerHello.capabilities` includes `"events.subscribe"`, an authenticated Owner, managed session, or external seat connection may open a long-lived, cursor-resumable push stream on a dedicated connection with `request.kind = "subscribe"`:
+
+```json
+{
+  "version": { "major": 1, "minor": 0 },
+  "request_id": 1,
+  "generation": 1,
+  "authority": null,
+  "request": {
+    "kind": "subscribe",
+    "input": {
+      "project_id": "prj_01...",
+      "agent_id": null,
+      "after_cursor": null,
+      "filter": ["mail.notice", "agent.state"],
+      "max_batch_bytes": 65536
+    }
+  }
+}
+```
+
+- **Authorization & scope:** Owner connections may filter by `project_id` / `agent_id` or subscribe across all registered projects (`project_id: null`). Managed and external session connections are pinned to their authenticated `(project_id, agent_id, session_id)` and refuse cross-project or cross-agent selectors; session-owned events (`agent.state`, `session.hold`, `session.revoke`) are gated to that exact session/credential.
+- **Effective byte cap:** `min(max_batch_bytes, ServerHello.maximum_reply_bytes)` must be at least `4096` bytes (`MIN_BATCH_BYTES`) and at most `1,048,576` bytes (`MAX_FRAME_BYTES`). Every streamed frame and terminal error stays within this effective cap; an oversized event emits a terminal `input-too-large` error carrying the exact serialized byte count.
+- **Streamed frames:** Each pushed `IpcResponse` carries `result.state = "output"` with `schema = "se.event-stream/v1"`. Clients MUST verify `schema == "se.event-stream/v1"` before parsing `value`, which is one of:
+  - **Event frame:** `{ "cursor": "evcur_v1_...", "event_id": "ev_...", "kind": "<kind>", "occurred_at_us": i64, "payload": { ... } }`, where `kind` is one of `"mail.notice"`, `"agent.state"`, `"assignment"`, `"decision"`, `"session.hold"`, or `"session.revoke"`.
+    - **Erasure invariant:** `"mail.notice"` and `"decision"` payloads carry IDs, routing metadata, and body-free dedupe digests only—never message or decision text bodies.
+  - **Heartbeat control frame:** `{ "kind": "heartbeat", "head_cursor": "evcur_v1_..." }` emitted immediately when subscribing without `after_cursor` and periodically (default 10s) for liveness, never advancing `head_cursor` ahead of covered/delivered replay.
+  - **Lagged control frame (terminal):** `{ "kind": "lagged", "missed_through_cursor": "evcur_v1_..." }` emitted when the per-subscriber queue (256 frames) overflows, after which the host closes the stream.
+- **Cursor verification & termination:** Cursors (`evcur_v1_...`) are bound to `(store_id, incarnation, generation, event_seq)`. Malformed, reset/restored, or ahead-of-head cursors refuse with `code = "cursor-invalid"`; host generation changes refuse with `code = "runtime-incompatible"`. Session/seat revocation fences queued frames and terminates with `code = "capability-invalid"` (or closes the connection cleanly if a frame write was interrupted mid-frame).
+
+---
+
+## 6. Operation Schemas
 
 Exact JSON Schemas for every registered operation's input and output are exported directly by the installed `se` binary (offline, without a running host):
 

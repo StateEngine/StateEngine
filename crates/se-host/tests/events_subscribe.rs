@@ -282,10 +282,34 @@ impl Drop for LiveHost {
     }
 }
 
+fn assert_capability_advertised(host: &LiveHost) -> Result<(), Box<dyn std::error::Error>> {
+    let cap_conn = BlockingIpcClient::connect_authenticated_with_capabilities(
+        &host.endpoint,
+        ClientCredential::Machine(Secret::new(vec![23; 32])?),
+        reply_limit()?,
+        &host.owner_opts(Duration::from_secs(10)),
+        vec![CAPABILITY_IPC_CAPABILITIES.to_owned()],
+    )?;
+    let advertised = cap_conn
+        .negotiated()
+        .capabilities
+        .as_deref()
+        .ok_or("expected negotiated capabilities in ServerHello")?;
+    assert!(
+        advertised
+            .iter()
+            .any(|cap| cap == se_host::events::EVENTS_SUBSCRIBE_CAPABILITY),
+        "expected events.subscribe in ServerHello capabilities: {advertised:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn owner_subscribe_pushes_body_free_mail_notice_and_resumes_from_cursor()
 -> Result<(), Box<dyn std::error::Error>> {
     let host = LiveHost::start()?;
+    assert_capability_advertised(&host)?;
+
     let mut sub_conn = host.owner_conn(Duration::from_secs(10))?;
     let call = IpcEnvelope {
         version: se_types::API_VERSION,

@@ -106,7 +106,10 @@ pub trait IpcPlatform: Send + Sync {
 pub const MAX_CAPABILITIES: usize = 32;
 pub const MAX_CAPABILITY_LEN: usize = 64;
 pub const CAPABILITY_IPC_CAPABILITIES: &str = "ipc.capabilities";
-pub const HOST_CAPABILITIES: &[&str] = &[CAPABILITY_IPC_CAPABILITIES];
+pub const HOST_CAPABILITIES: &[&str] = &[
+    CAPABILITY_IPC_CAPABILITIES,
+    crate::events::EVENTS_SUBSCRIBE_CAPABILITY,
+];
 
 pub struct ClientHello {
     pub version: ApiVersion,

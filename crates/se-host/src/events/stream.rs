@@ -3,9 +3,9 @@
 //! Acquires `mail_waits.client_work()?`, never returns to 300s `read_call_idle`,
 //! bounds per-subscriber memory via a fixed-capacity queue (emitting `{ kind:
 //! "lagged", missed_through_cursor }` and closing on overflow), emits periodic
-//! `{ kind: "heartbeat", head_cursor }` frames, fences queued frames on
-//! revocation, and terminates cleanly on peer EOF, session/lease revocation or
-//! expiry, or host shutdown.
+//! `{ kind: "heartbeat", head_cursor }` frames, fences queued frames and
+//! in-progress writes on revocation/shutdown, and terminates cleanly on peer
+//! EOF, session/lease revocation or expiry, or host shutdown.
 use super::{
     ControlFrame, DEFAULT_HEARTBEAT_SECS, EVENT_STREAM_SCHEMA, EventPushFrame,
     MAX_SUBSCRIBER_QUEUE, SubscribeFrame,
@@ -15,10 +15,11 @@ use super::{
 use crate::{
     OperationOutput,
     client::lease::Deadline,
+    ipc::StreamWriteOutcome,
     runtime::{AdmittedExchange, HostedRouter, MailRecipient},
 };
 use se_types::{Result, SeError};
-use std::{sync::Arc, time::Duration};
+use std::{pin::pin, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, watch};
 
 enum ProducerEvent {
@@ -57,10 +58,10 @@ pub(crate) async fn serve_with_config(
     commits.borrow_and_update();
 
     let sub = Arc::new(sub);
-    let (start_seq, initial_head_cursor) = match scan::resolve_start_cursor(router, &sub).await {
+    let (start_seq, initial_cursor) = match scan::resolve_start_cursor(router, &sub).await {
         Ok(pair) => pair,
         Err(err) => {
-            send_error(exchange, err).await?;
+            send_error(exchange, err, sub.max_batch_bytes, shutdown).await?;
             return Ok(());
         }
     };
@@ -89,7 +90,7 @@ pub(crate) async fn serve_with_config(
         router,
         exchange,
         &sub,
-        initial_head_cursor,
+        initial_cursor,
         heartbeat_interval,
         cancel_signal,
         shutdown,
@@ -122,14 +123,16 @@ async fn pump_stream(
     lagged_rx: &mut oneshot::Receiver<String>,
 ) -> Result<()> {
     if is_cancelled(&cancel_signal) {
-        send_error(exchange, revoked_error()).await?;
+        send_error(exchange, revoked_error(), sub.max_batch_bytes, shutdown).await?;
         return Ok(());
     }
     if sub.after_cursor.is_none() {
         let init_hb = SubscribeFrame::Control(ControlFrame::Heartbeat {
             head_cursor: head_cursor.clone(),
         });
-        send_frame(exchange, &init_hb, sub.max_batch_bytes, false).await?;
+        if !send_cancellable(exchange, sub, &cancel_signal, shutdown, &init_hb, false).await? {
+            return Ok(());
+        }
     }
 
     let mut heartbeat = tokio::time::interval(heartbeat_interval);
@@ -140,17 +143,12 @@ async fn pump_stream(
     let mut lagged_rx = Some(lagged_rx);
     loop {
         if is_cancelled(&cancel_signal) {
-            send_error(exchange, revoked_error()).await?;
+            send_error(exchange, revoked_error(), sub.max_batch_bytes, shutdown).await?;
             return Ok(());
         }
         let wait_fatal = wait_optional(&mut fatal_rx);
         let wait_lagged = wait_optional(&mut lagged_rx);
-        let wait_cancel = async {
-            match &cancel_signal {
-                Some(sig) => sig.changed.notified().await,
-                None => std::future::pending::<()>().await,
-            }
-        };
+        let wait_cancel = wait_for_cancel(&cancel_signal);
         tokio::select! {
             biased;
             _ = shutdown.changed() => return Ok(()),
@@ -160,7 +158,7 @@ async fn pump_stream(
             }
             fatal = wait_fatal => match fatal {
                 Ok(err) => {
-                    send_error(exchange, err).await?;
+                    send_error(exchange, err, sub.max_batch_bytes, shutdown).await?;
                     return Ok(());
                 }
                 Err(_) => {
@@ -168,21 +166,15 @@ async fn pump_stream(
                 }
             },
             _ = wait_cancel => {
-                if is_cancelled(&cancel_signal) {
-                    send_error(exchange, revoked_error()).await?;
-                    return Ok(());
-                }
+                send_error(exchange, revoked_error(), sub.max_batch_bytes, shutdown).await?;
+                return Ok(());
             }
             lagged = wait_lagged => match lagged {
                 Ok(missed_through_cursor) => {
-                    if is_cancelled(&cancel_signal) {
-                        send_error(exchange, revoked_error()).await?;
-                        return Ok(());
-                    }
                     let frame = SubscribeFrame::Control(ControlFrame::Lagged {
                         missed_through_cursor,
                     });
-                    send_frame(exchange, &frame, sub.max_batch_bytes, true).await?;
+                    let _ = send_cancellable(exchange, sub, &cancel_signal, shutdown, &frame, true).await?;
                     return Ok(());
                 }
                 Err(_) => {
@@ -194,11 +186,14 @@ async fn pump_stream(
                     exchange,
                     sub,
                     &cancel_signal,
+                    shutdown,
                     &mut head_cursor,
                     &mut heartbeat,
                     &mut fatal_rx,
                     item,
-                ).await? {
+                )
+                .await?
+                {
                     return Ok(());
                 }
             }
@@ -208,8 +203,11 @@ async fn pump_stream(
                     exchange,
                     sub,
                     &cancel_signal,
+                    shutdown,
                     &head_cursor,
-                ).await? {
+                )
+                .await?
+                {
                     return Ok(());
                 }
             }
@@ -226,10 +224,25 @@ async fn wait_optional<T>(
     }
 }
 
+async fn wait_for_cancel(signal: &Option<Arc<crate::http::mail::Signal>>) {
+    let Some(sig) = signal else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    loop {
+        if sig.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        sig.changed.notified().await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn handle_producer_item(
     exchange: &mut AdmittedExchange,
     sub: &AdmittedSubscribe,
     cancel_signal: &Option<Arc<crate::http::mail::Signal>>,
+    shutdown: &mut watch::Receiver<Option<Deadline>>,
     head_cursor: &mut String,
     heartbeat: &mut tokio::time::Interval,
     fatal_rx: &mut Option<&mut oneshot::Receiver<SeError>>,
@@ -238,22 +251,16 @@ async fn handle_producer_item(
     match item {
         Some(ProducerEvent::Frame(frame, cur)) => {
             if is_cancelled(cancel_signal) {
-                send_error(exchange, revoked_error()).await?;
+                send_error(exchange, revoked_error(), sub.max_batch_bytes, shutdown).await?;
                 return Ok(false);
             }
             let wrapped = SubscribeFrame::Event(frame);
-            match send_frame(exchange, &wrapped, sub.max_batch_bytes, false).await {
-                Ok(()) => {
-                    *head_cursor = cur;
-                    heartbeat.reset();
-                    Ok(true)
-                }
-                Err(err) if is_frame_oversize(&err) => {
-                    send_error(exchange, oversize_frame_error(sub.max_batch_bytes)).await?;
-                    Ok(false)
-                }
-                Err(err) => Err(err),
+            if !send_cancellable(exchange, sub, cancel_signal, shutdown, &wrapped, false).await? {
+                return Ok(false);
             }
+            *head_cursor = cur;
+            heartbeat.reset();
+            Ok(true)
         }
         Some(ProducerEvent::Advance(cur)) => {
             *head_cursor = cur;
@@ -263,7 +270,7 @@ async fn handle_producer_item(
             if let Some(rx) = fatal_rx.take()
                 && let Ok(err) = rx.try_recv()
             {
-                send_error(exchange, err).await?;
+                send_error(exchange, err, sub.max_batch_bytes, shutdown).await?;
             }
             Ok(false)
         }
@@ -275,21 +282,21 @@ async fn handle_heartbeat_tick(
     exchange: &mut AdmittedExchange,
     sub: &AdmittedSubscribe,
     cancel_signal: &Option<Arc<crate::http::mail::Signal>>,
+    shutdown: &mut watch::Receiver<Option<Deadline>>,
     head_cursor: &str,
 ) -> Result<bool> {
     if is_cancelled(cancel_signal) {
-        send_error(exchange, revoked_error()).await?;
+        send_error(exchange, revoked_error(), sub.max_batch_bytes, shutdown).await?;
         return Ok(false);
     }
     if let Err(err) = scan::verify_live_authority(router, sub).await {
-        send_error(exchange, err).await?;
+        send_error(exchange, err, sub.max_batch_bytes, shutdown).await?;
         return Ok(false);
     }
     let hb = SubscribeFrame::Control(ControlFrame::Heartbeat {
         head_cursor: head_cursor.to_owned(),
     });
-    send_frame(exchange, &hb, sub.max_batch_bytes, false).await?;
-    Ok(true)
+    send_cancellable(exchange, sub, cancel_signal, shutdown, &hb, false).await
 }
 
 fn register_session_wait(
@@ -361,7 +368,7 @@ fn spawn_producer(
                                 Err(mpsc::error::TrySendError::Closed(_)) => return,
                             }
                         }
-                        if !had_frames && !outcome.has_more && outcome.next_seq > last_seq {
+                        if !had_frames && outcome.next_seq > last_seq {
                             let _ = tx.try_send(ProducerEvent::Advance(outcome.safe_cursor));
                         }
                         last_seq = outcome.next_seq;
@@ -376,22 +383,13 @@ fn spawn_producer(
                     }
                 }
             }
-            let wait_signal = async {
-                match &cancel_signal {
-                    Some(sig) => sig.changed.notified().await,
-                    None => std::future::pending::<()>().await,
-                }
-            };
             tokio::select! {
                 biased;
                 _ = &mut stop_rx => return,
                 _ = shutdown.changed() => return,
-                _ = wait_signal => {
-                    if is_cancelled(&cancel_signal) {
-                        let _ = fatal_tx.send(revoked_error());
-                        return;
-                    }
-                    drain = true;
+                _ = wait_for_cancel(&cancel_signal) => {
+                    let _ = fatal_tx.send(revoked_error());
+                    return;
                 }
                 changed = commits.changed() => {
                     if changed.is_err() {
@@ -420,26 +418,24 @@ fn revoked_error() -> SeError {
     ))
 }
 
-fn is_frame_oversize(err: &SeError) -> bool {
-    err.code() == se_types::Code::UsageInvalidValue
-}
-
-fn oversize_frame_error(limit_bytes: u32) -> SeError {
+fn oversize_frame_error(limit_bytes: u32, exact_bytes: usize) -> SeError {
     SeError::new(se_types::Detail::InputTooLarge(
         se_types::details::InputTooLarge {
             field: "events.subscribe frame".into(),
             limit_bytes: u64::from(limit_bytes),
-            got_bytes: u64::from(limit_bytes).saturating_add(1),
+            got_bytes: exact_bytes as u64,
         },
     ))
 }
 
-async fn send_frame(
+async fn send_cancellable(
     exchange: &mut AdmittedExchange,
+    sub: &AdmittedSubscribe,
+    cancel_signal: &Option<Arc<crate::http::mail::Signal>>,
+    shutdown: &mut watch::Receiver<Option<Deadline>>,
     frame: &SubscribeFrame,
-    max_batch_bytes: u32,
     terminal: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let value = serde_json::to_value(frame)
         .map_err(|e| se_core::scope::unreadable("event stream frame", &e.to_string()))?;
     let output = OperationOutput {
@@ -447,13 +443,51 @@ async fn send_frame(
         value,
         window: None,
     };
-    exchange
-        .reply_stream_part(Ok(output), max_batch_bytes as usize, terminal)
-        .await
+    let mut shutdown_watch = shutdown.clone();
+    let cancel = pin!(async {
+        tokio::select! {
+            biased;
+            _ = shutdown_watch.changed() => {}
+            _ = wait_for_cancel(cancel_signal) => {}
+        }
+    });
+    match exchange
+        .reply_stream_part_cancellable(Ok(output), sub.max_batch_bytes as usize, terminal, cancel)
+        .await?
+    {
+        StreamWriteOutcome::Sent => Ok(true),
+        StreamWriteOutcome::InterruptedPartial => Ok(false),
+        StreamWriteOutcome::CancelledBeforeWrite => {
+            if is_cancelled(cancel_signal) {
+                send_error(exchange, revoked_error(), sub.max_batch_bytes, shutdown).await?;
+            }
+            Ok(false)
+        }
+        StreamWriteOutcome::Oversize { exact_bytes } => {
+            send_error(
+                exchange,
+                oversize_frame_error(sub.max_batch_bytes, exact_bytes),
+                sub.max_batch_bytes,
+                shutdown,
+            )
+            .await?;
+            Ok(false)
+        }
+    }
 }
 
-async fn send_error(exchange: &mut AdmittedExchange, error: SeError) -> Result<()> {
-    exchange
-        .reply_stream_part(Err(error), crate::client::wire::MAX_FRAME_BYTES, true)
-        .await
+async fn send_error(
+    exchange: &mut AdmittedExchange,
+    error: SeError,
+    max_batch_bytes: u32,
+    shutdown: &mut watch::Receiver<Option<Deadline>>,
+) -> Result<()> {
+    let mut shutdown_watch = shutdown.clone();
+    let cancel = pin!(async {
+        let _ = shutdown_watch.changed().await;
+    });
+    let _ = exchange
+        .reply_stream_part_cancellable(Err(error), max_batch_bytes as usize, true, cancel)
+        .await?;
+    Ok(())
 }

@@ -184,13 +184,17 @@ async fn send(
 }
 
 impl AdmittedExchange {
-    /// Stream one bounded part of a long-lived reply (used by `events.subscribe`).
-    pub(crate) async fn reply_stream_part(
+    /// Stream one bounded part of a long-lived reply with cancellation at the write boundary.
+    pub(crate) async fn reply_stream_part_cancellable<F>(
         &mut self,
         output: Result<OperationOutput>,
         max_bytes: usize,
         terminal: bool,
-    ) -> Result<()> {
+        cancel: F,
+    ) -> Result<crate::ipc::StreamWriteOutcome>
+    where
+        F: std::future::Future<Output = ()> + Unpin,
+    {
         let result = match output {
             Ok(value) => IpcResult::Output(Box::new(value)),
             Err(error) => IpcResult::Error(super::route::envelope(&error)?),
@@ -204,7 +208,7 @@ impl AdmittedExchange {
         let deadline = super::serve::options(Duration::from_secs(5))?;
         self.connection
             .connection
-            .reply_part_bounded(&response, &deadline, max_bytes, terminal)
+            .reply_part_cancellable(&response, &deadline, max_bytes, terminal, cancel)
             .await
     }
 }

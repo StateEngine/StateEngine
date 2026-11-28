@@ -65,16 +65,46 @@ pub(super) async fn receive_optional(
     Ok(Some(wire::WireBytes::from_owned(bytes)))
 }
 
+pub(super) enum SendOutcome {
+    Sent,
+    CancelledBeforeWrite,
+    InterruptedPartial,
+}
+
 pub(super) async fn send(
     stream: &NativeStream,
     frame: &wire::WireBytes,
     deadline: &Deadline,
 ) -> Result<()> {
+    let _ = send_cancellable(stream, frame, deadline, std::future::pending()).await?;
+    Ok(())
+}
+
+pub(super) async fn send_cancellable<F>(
+    stream: &NativeStream,
+    frame: &wire::WireBytes,
+    deadline: &Deadline,
+    mut cancel: F,
+) -> Result<SendOutcome>
+where
+    F: std::future::Future<Output = ()> + Unpin,
+{
     let mut bytes = frame.as_bytes();
+    let mut wrote_any = false;
     while !bytes.is_empty() {
-        bounded(deadline, stream.writable())
-            .await?
-            .map_err(|e| wire::io_failure("wait IPC write", e))?;
+        tokio::select! {
+            biased;
+            _ = &mut cancel => {
+                return Ok(if wrote_any {
+                    SendOutcome::InterruptedPartial
+                } else {
+                    SendOutcome::CancelledBeforeWrite
+                });
+            }
+            ready = bounded(deadline, stream.writable()) => {
+                ready?.map_err(|e| wire::io_failure("wait IPC write", e))?;
+            }
+        }
         match stream.try_write(bytes) {
             Ok(0) => {
                 return Err(wire::io_failure(
@@ -82,7 +112,10 @@ pub(super) async fn send(
                     io::ErrorKind::WriteZero.into(),
                 ));
             }
-            Ok(count) => bytes = &bytes[count..],
+            Ok(count) => {
+                wrote_any = true;
+                bytes = &bytes[count..];
+            }
             Err(e)
                 if matches!(
                     e.kind(),
@@ -94,7 +127,7 @@ pub(super) async fn send(
             Err(e) => return Err(wire::io_failure("write IPC frame", e)),
         }
     }
-    Ok(())
+    Ok(SendOutcome::Sent)
 }
 
 /// Idle time is independent of the operation budget. The call clock starts at

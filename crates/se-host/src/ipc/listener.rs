@@ -20,6 +20,7 @@ use refusal::send_refusal;
 #[path = "listener/startup.rs"]
 mod startup;
 pub use connection::IpcConnection;
+pub(crate) use connection::StreamWriteOutcome;
 pub use retirement::IpcClose;
 use se_types::{Result, SeError};
 use std::sync::{Arc, atomic::AtomicBool};

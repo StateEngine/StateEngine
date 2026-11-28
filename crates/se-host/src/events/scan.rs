@@ -67,8 +67,10 @@ pub(crate) async fn resolve_start_cursor(
                     Some(raw) => cursor::decode_and_verify(raw, &info, context.generation)?,
                     None => head_seq,
                 };
-                let head_cursor = cursor::encode(&info, context.generation, head_seq)?;
-                Ok((start_seq, head_cursor))
+                // Initialize heartbeat at start_seq (the caller's input cursor on replay,
+                // or head_seq on fresh tail) so heartbeats never advance ahead of coverage.
+                let initial_cursor = cursor::encode(&info, context.generation, start_seq)?;
+                Ok((start_seq, initial_cursor))
             })();
             crate::runtime::executor::close_read(res, phase.close())
         })
@@ -116,7 +118,6 @@ pub(crate) async fn scan_events(
 ) -> Result<ScanOutcome> {
     router.check_open()?;
     let context = router.context.clone();
-    let reader = Arc::clone(&router.execution.reader);
     let project_filter = sub.project_filter.clone();
     let agent_filter = sub.agent_filter.clone();
     let filter = sub.filter.clone();
@@ -145,7 +146,6 @@ pub(crate) async fn scan_events(
         .run_owned(&deadline, move || {
             scan_events_blocking(
                 &context,
-                &reader,
                 &principal,
                 project_filter.as_ref(),
                 agent_filter.as_ref(),
@@ -160,7 +160,6 @@ pub(crate) async fn scan_events(
 #[allow(clippy::too_many_arguments)]
 fn scan_events_blocking(
     context: &crate::runtime::admission::AdmissionContext,
-    reader: &se_store::SqliteReader,
     principal: &ScanPrincipal,
     project_filter: Option<&ProjectId>,
     agent_filter: Option<&AgentId>,
@@ -169,27 +168,23 @@ fn scan_events_blocking(
     max_items: usize,
 ) -> Result<ScanOutcome> {
     let phase = context.reads.read_phase().map_err(|e| store_error(&e))?;
-    let info = match verify_scan_phase(context, reader, principal, &phase) {
-        Ok(info) => info,
-        Err(err) => return crate::runtime::executor::close_read(Err(err), phase.close()),
-    };
+    if let Err(err) = verify_scan_phase(context, principal, &phase) {
+        return crate::runtime::executor::close_read(Err(err), phase.close());
+    }
+    let (info, projects) = resolve_pinned_inventory(context, phase, principal, project_filter)?;
 
     let upper_seq = info.head.as_ref().map_or(0, StorePosition::sequence);
     let upper_cursor = cursor::encode(&info, context.generation, upper_seq)?;
     if upper_seq <= after_seq {
-        return crate::runtime::executor::close_read(
-            Ok(ScanOutcome {
-                frames: Vec::new(),
-                next_seq: upper_seq,
-                safe_cursor: upper_cursor.clone(),
-                missed_cursor: upper_cursor,
-                has_more: false,
-            }),
-            phase.close(),
-        );
+        return Ok(ScanOutcome {
+            frames: Vec::new(),
+            next_seq: upper_seq,
+            safe_cursor: upper_cursor.clone(),
+            missed_cursor: upper_cursor,
+            has_more: false,
+        });
     }
 
-    let projects = resolve_projects(context, phase, principal, project_filter)?;
     let kinds = project::event_kinds_for_filter(filter);
     let since = (after_seq > 0)
         .then(|| {
@@ -267,12 +262,10 @@ fn scan_events_blocking(
 
 fn verify_scan_phase(
     context: &crate::runtime::admission::AdmissionContext,
-    reader: &se_store::SqliteReader,
     principal: &ScanPrincipal,
     phase: &se_store::ReadPhase,
-) -> Result<StoreInfo> {
+) -> Result<()> {
     context.check_generation(phase)?;
-    let info = reader.info().map_err(|e| store_error(&e))?;
     if let ScanPrincipal::Session {
         secret, purpose, ..
     } = principal
@@ -283,7 +276,7 @@ fn verify_scan_phase(
             context.verify_session(phase, secret)?;
         }
     }
-    Ok(info)
+    Ok(())
 }
 
 fn prune_collected_budget(
@@ -310,66 +303,93 @@ fn prune_collected_budget(
     }
 }
 
-fn resolve_projects(
+/// Capture `StoreInfo` (the common upper watermark) and the scoped project list
+/// from the SAME pinned SQLite snapshot so newly registered projects or commits
+/// can never fall behind `upper_seq` while missing from the inventory.
+fn resolve_pinned_inventory(
     context: &crate::runtime::admission::AdmissionContext,
     phase: se_store::ReadPhase,
     principal: &ScanPrincipal,
     project_filter: Option<&ProjectId>,
-) -> Result<Vec<ProjectId>> {
-    match (principal, project_filter) {
-        (_, Some(project)) => {
-            crate::runtime::executor::close_read(Ok(()), phase.close())?;
-            Ok(vec![project.clone()])
-        }
-        (ScanPrincipal::Owner(human), None) => {
-            let scope = ReadScope {
-                admission: Admission {
-                    scope: Scope::Registry,
-                    actor: Actor::Human(human.clone()),
-                    session: None,
-                    generation: context.generation.get(),
-                },
-                visibility: Visibility::Owner,
-            };
-            let mut snap = phase.into_snapshot(scope).map_err(|e| store_error(&e))?;
-            let list = (|| {
-                let mut all = Vec::new();
-                let mut next_cursor = None;
-                for _ in 0..MAX_PROJECT_PAGES {
-                    let budget = se_store::read_budget(
-                        next_cursor.take(),
-                        PROJECT_PAGE_LIMIT,
-                        SCAN_BYTES,
-                        Duration::from_secs(SCAN_DEADLINE_SECS),
-                    );
-                    let page = snap.projects(budget).map_err(|e| store_error(&e))?;
-                    for rec in page.items() {
-                        match &rec.current.body {
-                            se_store::EventBody::ProjectRegistered { project, .. }
-                            | se_store::EventBody::ProjectUpdated { project, .. }
-                            | se_store::EventBody::ProjectMoved { project, .. } => {
-                                all.push(project.clone());
-                            }
-                            _ => {}
-                        }
-                    }
-                    match page.next() {
-                        Some(cursor) => next_cursor = Some(cursor.clone()),
-                        None => return Ok(all),
-                    }
+) -> Result<(StoreInfo, Vec<ProjectId>)> {
+    let scope = match (principal, project_filter) {
+        (ScanPrincipal::Owner(human), Some(project)) => ReadScope {
+            admission: Admission {
+                scope: Scope::Project(project.clone()),
+                actor: Actor::Human(human.clone()),
+                session: None,
+                generation: context.generation.get(),
+            },
+            visibility: Visibility::Owner,
+        },
+        (ScanPrincipal::Owner(human), None) => ReadScope {
+            admission: Admission {
+                scope: Scope::Registry,
+                actor: Actor::Human(human.clone()),
+                session: None,
+                generation: context.generation.get(),
+            },
+            visibility: Visibility::Owner,
+        },
+        (
+            ScanPrincipal::Session {
+                project,
+                agent,
+                session,
+                ..
+            },
+            _,
+        ) => ReadScope {
+            admission: Admission {
+                scope: Scope::Project(project.clone()),
+                actor: Actor::Agent(agent.clone()),
+                session: Some(session.clone()),
+                generation: context.generation.get(),
+            },
+            visibility: Visibility::SelfOnly(agent.clone()),
+        },
+    };
+    let mut snap = phase.into_snapshot(scope).map_err(|e| store_error(&e))?;
+    let info = snap.info();
+    let list = match (principal, project_filter) {
+        (_, Some(project)) => Ok(vec![project.clone()]),
+        (ScanPrincipal::Session { project, .. }, None) => Ok(vec![project.clone()]),
+        (ScanPrincipal::Owner(_), None) => enumerate_all_projects(&mut snap),
+    };
+    let projects = crate::runtime::executor::close_read(list, snap.close())?;
+    Ok((info, projects))
+}
+
+fn enumerate_all_projects(snap: &mut se_store::SqliteSnapshot) -> Result<Vec<ProjectId>> {
+    let mut all = Vec::new();
+    let mut next_cursor = None;
+    for _ in 0..MAX_PROJECT_PAGES {
+        let budget = se_store::read_budget(
+            next_cursor.take(),
+            PROJECT_PAGE_LIMIT,
+            SCAN_BYTES,
+            Duration::from_secs(SCAN_DEADLINE_SECS),
+        );
+        let page = snap.projects(budget).map_err(|e| store_error(&e))?;
+        for rec in page.items() {
+            match &rec.current.body {
+                se_store::EventBody::ProjectRegistered { project, .. }
+                | se_store::EventBody::ProjectUpdated { project, .. }
+                | se_store::EventBody::ProjectMoved { project, .. } => {
+                    all.push(project.clone());
                 }
-                Err(se_core::scope::unreadable(
-                    "project list",
-                    "registered project count exceeds all-project stream enumeration cap; pass an explicit project_id",
-                ))
-            })();
-            crate::runtime::executor::close_read(list, snap.close())
+                _ => {}
+            }
         }
-        (ScanPrincipal::Session { project, .. }, None) => {
-            crate::runtime::executor::close_read(Ok(()), phase.close())?;
-            Ok(vec![project.clone()])
+        match page.next() {
+            Some(cursor) => next_cursor = Some(cursor.clone()),
+            None => return Ok(all),
         }
     }
+    Err(se_core::scope::unreadable(
+        "project list",
+        "registered project count exceeds all-project stream enumeration cap; pass an explicit project_id",
+    ))
 }
 
 struct ProjectScan {

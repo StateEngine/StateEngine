@@ -96,6 +96,53 @@ pub fn encode_json<T: Serialize>(value: &T, limit: usize) -> Result<WireBytes> {
 
 pub use se_mcp::wire::decode_json;
 
+struct ExactByteCount {
+    bytes: usize,
+}
+impl Write for ExactByteCount {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Encode a length-prefixed JSON frame, returning `Ok(Err(exact_bytes))` when
+/// the serialized JSON exceeds `limit` without allocating the payload buffer.
+pub(crate) fn encode_frame_checked<T: Serialize>(
+    value: &T,
+    limit: usize,
+) -> Result<std::result::Result<WireBytes, usize>> {
+    if limit == 0 || limit > MAX_FRAME_BYTES {
+        return Err(invalid("a nonzero budget at most 1 MiB"));
+    }
+    let mut exact = ExactByteCount { bytes: 0 };
+    serde_json::to_writer(&mut exact, value)
+        .map_err(|_| invalid("serializable JSON for IPC frame"))?;
+    if exact.bytes > limit {
+        return Ok(Err(exact.bytes));
+    }
+    let mut output = LimitedBuffer {
+        bytes: Zeroizing::new(Vec::with_capacity(exact.bytes)),
+        limit: exact.bytes,
+    };
+    serde_json::to_writer(&mut output, value)
+        .map_err(|_| invalid("complete JSON within the negotiated byte budget"))?;
+    if output.bytes.len() != exact.bytes {
+        return Err(invalid(
+            "the same JSON byte count during sizing and encoding",
+        ));
+    }
+    let length =
+        u32::try_from(output.bytes.len()).map_err(|_| invalid("a bounded frame length"))?;
+    let mut frame = Zeroizing::new(Vec::with_capacity(4 + output.bytes.len()));
+    frame.extend_from_slice(&length.to_be_bytes());
+    frame.extend_from_slice(&output.bytes);
+    Ok(Ok(WireBytes(frame)))
+}
+
 pub fn encode_frame<T: Serialize>(value: &T, limit: usize) -> Result<WireBytes> {
     let payload = encode_json(value, limit)?;
     let length =
@@ -340,6 +387,31 @@ struct OutputWire {
     schema: String,
     value: Value,
     window: Option<se_types::Window>,
+}
+
+pub(crate) fn encode_response_checked(
+    response: &crate::IpcResponse,
+    limit: usize,
+) -> Result<std::result::Result<WireBytes, usize>> {
+    let request_id =
+        NonZeroU64::new(response.request_id).ok_or_else(|| invalid("a positive request ID"))?;
+    let result = match &response.result {
+        crate::IpcResult::Output(output) => ResultRef::Output(OutputRef {
+            schema: &output.schema,
+            value: &output.value,
+            window: &output.window,
+        }),
+        crate::IpcResult::Error(error) => ResultRef::Error(error),
+    };
+    encode_frame_checked(
+        &ResponseRef {
+            version: response.version.into(),
+            request_id,
+            generation: response.generation,
+            result,
+        },
+        limit,
+    )
 }
 
 pub fn encode_response(response: &crate::IpcResponse, limit: usize) -> Result<WireBytes> {
