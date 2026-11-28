@@ -39,22 +39,47 @@ fn write_identity(batch: &se_store::AtomicBatch, operation: &'static str) -> Wri
     }
 }
 
-fn partial_commit_error(
-    mut error: SeError,
-    committed: &[String],
-    id: &ProjectId,
-    key: &IdempotencyKey,
-) -> SeError {
-    if !committed.is_empty() {
-        error.body = error.body.with_remedy(se_types::Remedy {
+#[derive(Default)]
+struct InitProgress {
+    changed: Vec<String>,
+    events: Vec<EventId>,
+}
+
+impl InitProgress {
+    /// Preserve confirmed commit receipts across any later readback, phase, or
+    /// output-rendering failure, distinguishing confirmed events from the failed step.
+    fn wrap_error(&self, error: SeError, id: Option<&ProjectId>, key: &IdempotencyKey) -> SeError {
+        if self.events.is_empty() {
+            return error;
+        }
+        let mut wrapped = CommittedWrite {
+            operation: "project.init".into(),
+            key: Some(key.clone()),
+            natural_events: Vec::new(),
+            committed_events: self.events.clone(),
+        }
+        .response_error(error);
+        let scope_note = id
+            .map(|project| format!(" for project {project}"))
+            .unwrap_or_default();
+        let steps = if self.changed.is_empty() {
+            format!("{} confirmed event(s)", self.events.len())
+        } else {
+            self.changed.join(", ")
+        };
+        wrapped.body = wrapped.body.with_remedy(se_types::Remedy {
             text: format!(
-                "Earlier setup steps already committed for project {id} ({}). Resolve the failure and retry `se init` with the exact same `--key {key}` to resume.",
-                committed.join(", "),
+                "Earlier setup writes already committed{scope_note} ({steps}; confirmed events: {}). Resolve the later failure and retry `se init` with the exact same `--key {key}` to resume.",
+                self.events
+                    .iter()
+                    .map(EventId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
             ),
             command: None,
         });
+        wrapped
     }
-    error
 }
 
 fn resolve_root_and_name(input: &ProjectInit) -> Result<(NativePath, PathBuf, String)> {
@@ -84,12 +109,6 @@ fn resolve_root_and_name(input: &ProjectInit) -> Result<(NativePath, PathBuf, St
         })
         .ok_or_else(|| SeError::invalid("project name", "a validated project name"))?;
     Ok((root, repo_path, project_name))
-}
-
-#[derive(Default)]
-struct InitProgress {
-    changed: Vec<String>,
-    events: Vec<EventId>,
 }
 
 async fn ensure_project(
@@ -419,6 +438,28 @@ fn finish_output(
     Ok((output, committed))
 }
 
+fn validate_harness(
+    configuration: &se_config::config_policy::ConfigFile,
+    input: &ProjectInit,
+) -> Result<()> {
+    let Some(name) = input.harness.as_deref() else {
+        return Ok(());
+    };
+    if !matches!(name, "claude" | "codex") && !configuration.harnesses.contains_key(name) {
+        return Err(SeError::new(se_types::Detail::StateConflict(
+            se_types::details::StateConflict {
+                subject: "running host configuration".into(),
+                reason: format!(
+                    "harness `{name}` is not loaded in the running host's startup configuration"
+                ),
+                next_step: "Check and restart the running host (`se down` then `se up` with the same --home) after publishing the harness descriptor, then retry `se init`".into(),
+            },
+        )));
+    }
+    se_core::harness_selection::resolve(configuration, input.provider, Some(name))?;
+    Ok(())
+}
+
 pub(super) async fn execute(
     context: ExecutionContext,
     input: ProjectInit,
@@ -439,13 +480,7 @@ pub(super) async fn execute(
     input.validate()?;
     let (root, repo_path, project_name) = resolve_root_and_name(&input)?;
     let configuration = kernel.configuration().cloned().unwrap_or_default();
-    if input.harness.is_some() {
-        se_core::harness_selection::resolve(
-            &configuration,
-            input.provider,
-            input.harness.as_deref(),
-        )?;
-    }
+    validate_harness(&configuration, &input)?;
     let mut progress = InitProgress::default();
     let (id, created) = ensure_project(
         &context,
@@ -456,7 +491,8 @@ pub(super) async fn execute(
         deadline,
         &mut progress,
     )
-    .await?;
+    .await
+    .map_err(|err| progress.wrap_error(err, None, &input.idempotency_key))?;
     let project_admission = Admission {
         actor: Actor::Human(human.clone()),
         scope: Scope::Project(id.clone()),
@@ -472,7 +508,7 @@ pub(super) async fn execute(
         &mut progress,
     )
     .await
-    .map_err(|err| partial_commit_error(err, &progress.changed, &id, &input.idempotency_key))?;
+    .map_err(|err| progress.wrap_error(err, Some(&id), &input.idempotency_key))?;
     let (agent_id, agent_created) = ensure_initial_agent(
         &context,
         &project_admission,
@@ -482,15 +518,15 @@ pub(super) async fn execute(
         &mut progress,
     )
     .await
-    .map_err(|err| partial_commit_error(err, &progress.changed, &id, &input.idempotency_key))?;
+    .map_err(|err| progress.wrap_error(err, Some(&id), &input.idempotency_key))?;
     let (metadata, project_name, row) =
         read_final_state(&context, &project_admission, &id, &agent_id, deadline)
             .await
-            .map_err(|err| {
-                partial_commit_error(err, &progress.changed, &id, &input.idempotency_key)
-            })?;
+            .map_err(|err| progress.wrap_error(err, Some(&id), &input.idempotency_key))?;
     project::verify_saved_agent(&row, &input)
-        .map_err(|err| partial_commit_error(err, &progress.changed, &id, &input.idempotency_key))?;
+        .map_err(|err| progress.wrap_error(err, Some(&id), &input.idempotency_key))?;
+    let key = input.idempotency_key.clone();
+    let final_id = id.clone();
     finish_output(
         FinalizeArgs {
             id,
@@ -502,9 +538,13 @@ pub(super) async fn execute(
             human,
             home: context.state_directory,
             repo_path,
-            key: input.idempotency_key,
-            progress,
+            key: key.clone(),
+            progress: InitProgress {
+                changed: progress.changed.clone(),
+                events: progress.events.clone(),
+            },
         },
         &configuration,
     )
+    .map_err(|err| progress.wrap_error(err, Some(&final_id), &key))
 }
