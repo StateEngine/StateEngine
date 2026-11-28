@@ -96,9 +96,11 @@ pub fn encode_json<T: Serialize>(value: &T, limit: usize) -> Result<WireBytes> {
 
 pub use se_mcp::wire::decode_json;
 
+#[cfg(feature = "listener")]
 struct ExactByteCount {
     bytes: usize,
 }
+#[cfg(feature = "listener")]
 impl Write for ExactByteCount {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.bytes = self.bytes.saturating_add(bytes.len());
@@ -111,6 +113,7 @@ impl Write for ExactByteCount {
 
 /// Encode a length-prefixed JSON frame, returning `Ok(Err(exact_bytes))` when
 /// the serialized JSON exceeds `limit` without allocating the payload buffer.
+#[cfg(feature = "listener")]
 pub(crate) fn encode_frame_checked<T: Serialize>(
     value: &T,
     limit: usize,
@@ -389,6 +392,7 @@ struct OutputWire {
     window: Option<se_types::Window>,
 }
 
+#[cfg(feature = "listener")]
 pub(crate) fn encode_response_checked(
     response: &crate::IpcResponse,
     limit: usize,
