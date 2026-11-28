@@ -583,6 +583,11 @@ impl Snapshot for SqliteSnapshot {
     ) -> StoreResult<Read<crate::published_turn::PublishedUsage>> {
         use rusqlite::OptionalExtension;
         let checked = "No turn with token usage was published for this session.";
+        if self.info.schema_version < 18 {
+            return Ok(Read::Absent {
+                checked: "This store predates published turns.".into(),
+            });
+        }
         let p = self.project_bytes()?;
         let a = self.agent_bytes(&agent)?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;

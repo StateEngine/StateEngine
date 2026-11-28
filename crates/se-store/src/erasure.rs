@@ -7,7 +7,7 @@ pub(crate) mod permit;
 mod residuals;
 mod resume;
 use crate::{connection, error::*, open::SqliteHost, *};
-use residuals::{inventory, recipient_transcripts, residual, same_inventory};
+use residuals::{atlas, inventory, recipient_transcripts, residual, same_inventory};
 use resume::{committed_generations, open_manifest, pinned_generations, unfinished};
 use rusqlite::{Connection, OptionalExtension};
 use se_types::{EventId, HumanId};
@@ -129,6 +129,9 @@ fn observe_one(
     let mut residuals: Vec<ResidualCopy> = residual(source, turn, home)?.into_iter().collect();
     if !turn {
         residuals.extend(recipient_transcripts(c, seq, &kind)?);
+    }
+    if kind == "session.turn_published" {
+        residuals.push(atlas(home)?);
     }
     Ok((project, body, residuals))
 }

@@ -496,9 +496,10 @@ fn published_context<R: Snapshot>(
         .input_tokens
         .saturating_add(usage.cache_read_tokens)
         .saturating_add(usage.cache_write_tokens);
+    // A time this platform's clock cannot hold is reported as unknown.
     let observed = u64::try_from(value.occurred_at_us)
         .ok()
-        .map(|us| std::time::UNIX_EPOCH + std::time::Duration::from_micros(us));
+        .and_then(|us| std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_micros(us)));
     Ok(Some(Read::Present {
         value: super::outputs::ContextWindowView::new(used, None, configured, observed),
     }))

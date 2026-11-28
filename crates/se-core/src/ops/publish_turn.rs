@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 
 const MAX_PROSE_BYTES: usize = 1024 * 1024;
 const MAX_PATHS: usize = 256;
+/// 9999-12-31T23:59:59.999999Z: every platform clock can represent it.
+pub const MAX_OCCURRED_AT_US: i64 = 253_402_300_799_999_999;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -130,7 +132,8 @@ pub struct PublishTurnRequest {
     pub model: PublishedModel,
     /// The harness's ID for this turn; one per session and harness.
     pub vendor_turn_id: String,
-    /// When the turn completed, in Unix microseconds.
+    /// When the turn completed, in Unix microseconds, from 0 through the end
+    /// of year 9999.
     pub occurred_at_us: i64,
     pub role: PublishedRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,10 +188,10 @@ impl Validate for PublishTurnRequest {
         bounded("model.provider", &self.model.provider, 64)?;
         bounded("model.model", &self.model.model, 128)?;
         bounded("vendor_turn_id", &self.vendor_turn_id, 256)?;
-        if self.occurred_at_us < 0 {
+        if !(0..=MAX_OCCURRED_AT_US).contains(&self.occurred_at_us) {
             return Err(SeError::invalid(
                 "occurred_at_us",
-                "Unix microseconds, not negative",
+                "Unix microseconds from 0 through 253402300799999999 (the end of year 9999)",
             ));
         }
         digest(&self.content_sha256)?;
@@ -264,7 +267,9 @@ pub struct SessionPublishTurnOutput {
     pub agent_id: AgentId,
     pub session_id: SessionId,
     pub vendor_turn_id: String,
-    /// The store sequence of the published event, usable as a history cursor.
+    /// The store sequence number of the published event; replay returns the same
+    /// number. It orders events but is not a history `--position` cursor: read
+    /// the event (`se history --event ID`) for that.
     pub cursor: u64,
     /// Whether a prose body was stored.
     pub body_stored: bool,
@@ -277,6 +282,8 @@ pub struct SessionPublishTurnOutput {
 
 pub struct PublishTurnThen {
     key: IdempotencyKey,
+    agent: AgentId,
+    session: SessionId,
 }
 
 /// The one prose document: everything `se forget` must be able to remove.
@@ -305,6 +312,23 @@ fn prose(input: &PublishTurnRequest) -> Result<Option<String>> {
         ));
     }
     Ok(Some(text))
+}
+
+/// The request the idempotency key is bound to: the resolved agent and session,
+/// so one key never replays across sessions, and the reported digest only when
+/// prose keeps it, so nothing un-erasable is derived from content.
+fn canonical_intent(input: &PublishTurnRequest, turn: &PublishedTurn) -> Result<serde_json::Value> {
+    let mut intent = serde_json::to_value(input)
+        .map_err(|e| SeError::invalid("publish turn", &e.to_string()))?;
+    let fields = intent
+        .as_object_mut()
+        .ok_or_else(|| SeError::invalid("publish turn", "a JSON object request"))?;
+    fields.insert("target_agent_id".into(), turn.agent.as_str().into());
+    fields.insert("session_id".into(), turn.session.as_str().into());
+    if turn.content_sha256.is_none() {
+        fields.remove("content_sha256");
+    }
+    Ok(intent)
 }
 
 /// Who the turn belongs to: a session only ever names itself.
@@ -398,8 +422,8 @@ pub fn write<R: Snapshot>(
         }),
     };
     let key = input.idempotency_key.clone();
-    let intent = serde_json::to_value(&input)
-        .map_err(|e| SeError::invalid("publish turn", &e.to_string()))?;
+    let intent = canonical_intent(&input, &turn)?;
+    let (turn_agent, turn_session) = (turn.agent.clone(), turn.session.clone());
     let event = kernel.event(
         EventBody::SessionTurnPublished {
             turn,
@@ -410,7 +434,11 @@ pub fn write<R: Snapshot>(
     let batch = kernel.batch("session.publish_turn", key.clone(), intent, event, cx)?;
     Ok(crate::commit::OpStep::Commit {
         batch,
-        then: crate::ports::Then::PublishTurn(PublishTurnThen { key }),
+        then: crate::ports::Then::PublishTurn(PublishTurnThen {
+            key,
+            agent: turn_agent,
+            session: turn_session,
+        }),
     })
 }
 
@@ -434,6 +462,12 @@ pub fn committed<R: Snapshot>(
             "primary event is not session.turn_published",
         ));
     };
+    if turn.agent != then.agent || turn.session != then.session {
+        return Err(scope::unreadable(
+            "publish turn receipt",
+            "the committed turn names another agent or session than this request",
+        ));
+    }
     Ok(SessionPublishTurnOutput {
         agent_id: turn.agent,
         session_id: turn.session,

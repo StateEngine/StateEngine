@@ -122,33 +122,56 @@ fn feed_kinds(resolve: &PathResolver<'_>) -> Vec<EventKind> {
     }
     kinds
 }
+/// The usual transient bound for one fed event.
+const FEED_BYTES: u32 = 128 * 1024;
+/// The largest page a history read allows; bodies stop at 1 MiB, so every
+/// valid event fits.
+const FEED_EVENT_CEILING: u64 = 2 * 1024 * 1024;
 fn feed_page<R: Snapshot>(
     read: &mut R,
     kinds: Vec<EventKind>,
     since: Option<StorePosition>,
 ) -> Result<se_types::Page<StoredEvent>> {
-    read.history(
-        HistoryQuery {
-            agent: None,
-            session: None,
-            kinds,
-            families: vec![],
-            transcript: TranscriptFilter::Metadata,
-            since,
-            direction: HistoryDirection::OldestFirst,
-        },
-        ReadBudget {
+    let query = HistoryQuery {
+        agent: None,
+        session: None,
+        kinds,
+        families: vec![],
+        transcript: TranscriptFilter::Metadata,
+        since,
+        direction: HistoryDirection::OldestFirst,
+    };
+    let budget = |bytes: u32| -> Result<ReadBudget> {
+        Ok(ReadBudget {
             page: se_types::PageRequest {
                 after: None,
                 limit: NonZeroU32::new(1)
                     .ok_or_else(|| SeError::invalid("feed limit", "positive"))?,
-                max_bytes: NonZeroU32::new(131072)
+                max_bytes: NonZeroU32::new(bytes)
                     .ok_or_else(|| SeError::invalid("feed bytes", "positive"))?,
             },
             deadline: Duration::from_millis(100),
-        },
-    )
-    .map_err(|e| store_error(&e))
+        })
+    };
+    match read.history(query.clone(), budget(FEED_BYTES)?) {
+        // One large event, such as a long published turn, is read at its own
+        // size so later events and deletions never stall behind it.
+        Err(error) if error.code == se_store::StoreErrorCode::ReadBudgetTooSmall => {
+            match error.detail {
+                se_store::StoreDetail::Budget {
+                    required: Some(required),
+                    ..
+                } if required <= FEED_EVENT_CEILING => {
+                    let bytes = u32::try_from(required)
+                        .map_err(|_| SeError::invalid("feed bytes", "a 32-bit size"))?;
+                    read.history(query, budget(bytes)?)
+                        .map_err(|e| store_error(&e))
+                }
+                _ => Err(store_error(&error)),
+            }
+        }
+        other => other.map_err(|e| store_error(&e)),
+    }
 }
 fn feed_edit_change<R: Snapshot>(
     read: &mut R,

@@ -10,7 +10,7 @@ CREATE TABLE published_turns(
   model_provider TEXT NOT NULL CHECK(length(model_provider) BETWEEN 1 AND 64),
   model TEXT NOT NULL CHECK(length(model) BETWEEN 1 AND 128),
   vendor_turn TEXT NOT NULL CHECK(length(vendor_turn) BETWEEN 1 AND 256),
-  occurred_at_us INTEGER NOT NULL CHECK(occurred_at_us>=0),
+  occurred_at_us INTEGER NOT NULL CHECK(occurred_at_us BETWEEN 0 AND 253402300799999999),
   role TEXT NOT NULL CHECK(role IN ('user','assistant','tool')),
   body_payload INTEGER UNIQUE REFERENCES payloads(payload_id),
   body_omitted_bytes INTEGER NOT NULL CHECK(body_omitted_bytes>=0),
