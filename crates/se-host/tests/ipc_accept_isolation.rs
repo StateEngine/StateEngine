@@ -62,6 +62,7 @@ fn stalled_handshake_does_not_delay_a_normal_native_client() -> Check {
                     expected_generation: None,
                     maximum_reply_bytes: nonzero(4096)?,
                     authority: PresentedAuthority::OwnerProof { nonce, mac },
+                    client_capabilities: None,
                 })?;
                 stream.write_all(hello.as_bytes())?;
                 let frame = wire::read_payload(&mut stream, wire::MAX_FRAME_BYTES)?;

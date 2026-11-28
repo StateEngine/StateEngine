@@ -243,6 +243,7 @@ se remote watch --host build --target PROJECT_ID/AGENT_ID
 | [docs/HARNESSES.md](docs/HARNESSES.md) | Providers, permission profiles, per-agent model overrides, ACP & custom harnesses |
 | [docs/REMOTE.md](docs/REMOTE.md) | SSH pairing, remote mail, permissions, remote launch, stop, and delegation |
 | [docs/OPS.md](docs/OPS.md) | Complete operation inventory (67 CLI/core operations and 31 MCP tools) |
+| [docs/IPC.md](docs/IPC.md) | Local-IPC v1 wire protocol, framing, mutual-auth handshake, and capability negotiation |
 
 Built-in help works anywhere, even without a project or running host: run `se guide` for short workflow topics, `se help <command>` for flags, or `se schema <operation> --json` for exact input/output schemas.
 

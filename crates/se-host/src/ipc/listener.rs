@@ -418,7 +418,8 @@ impl PendingIpcHandshake {
         admitted: AuthorizedConnection,
         server_cap: std::num::NonZeroU32,
     ) -> Result<IpcConnection> {
-        self.finish_with_guest(admitted, server_cap, None).await
+        self.finish_with_guest(admitted, server_cap, None, None)
+            .await
     }
 
     pub(crate) async fn finish_with_guest(
@@ -426,6 +427,7 @@ impl PendingIpcHandshake {
         _admitted: AuthorizedConnection,
         server_cap: std::num::NonZeroU32,
         guest: Option<crate::ConnectionTicket>,
+        store_id: Option<&str>,
     ) -> Result<IpcConnection> {
         let HandshakeInput::Call(hello) = self.input else {
             return Err(SeError::invalid("IPC handshake", "an operation hello"));
@@ -447,7 +449,8 @@ impl PendingIpcHandshake {
                 return Err(error);
             }
         };
-        let mut ready = auth::negotiate_hello(&hello, &self.record, server_cap)?;
+        let mut ready =
+            auth::negotiate_hello_with_store(&hello, &self.record, server_cap, store_id)?;
         ready.lease = guest;
         send(
             &self.stream,

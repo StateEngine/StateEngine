@@ -61,16 +61,38 @@ pub fn decode_challenge(bytes: &[u8], expected: &EndpointRecord) -> Result<Serve
     Ok(challenge)
 }
 
+pub(crate) fn validate_capabilities(capabilities: &[String]) -> Result<()> {
+    if capabilities.len() > crate::MAX_CAPABILITIES {
+        return Err(refused("too many capabilities (max 32)"));
+    }
+    for cap in capabilities {
+        if cap.is_empty()
+            || cap.len() > crate::MAX_CAPABILITY_LEN
+            || !cap
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        {
+            return Err(refused("invalid capability name"));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct HelloRef<'a> {
     version: VersionWire,
     expected_generation: Option<se_types::Generation>,
     maximum_reply_bytes: NonZeroU32,
     authority: AuthorityRef<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_capabilities: Option<&'a [String]>,
 }
 pub fn encode_client_hello(hello: &crate::ClientHello) -> Result<super::wire::WireBytes> {
     if hello.maximum_reply_bytes.get() as usize > MAX_FRAME_BYTES {
         return Err(refused("reply cap exceeds 1 MiB"));
+    }
+    if let Some(caps) = hello.client_capabilities.as_deref() {
+        validate_capabilities(caps)?;
     }
     encode_frame(
         &HelloRef {
@@ -78,6 +100,7 @@ pub fn encode_client_hello(hello: &crate::ClientHello) -> Result<super::wire::Wi
             expected_generation: hello.expected_generation,
             maximum_reply_bytes: hello.maximum_reply_bytes,
             authority: (&hello.authority).into(),
+            client_capabilities: hello.client_capabilities.as_deref(),
         },
         MAX_ENDPOINT_BYTES,
     )
@@ -89,6 +112,15 @@ pub fn negotiate_hello(
     hello: &crate::ClientHello,
     endpoint: &EndpointRecord,
     server_cap: NonZeroU32,
+) -> Result<crate::ServerHello> {
+    negotiate_hello_with_store(hello, endpoint, server_cap, None)
+}
+
+pub(crate) fn negotiate_hello_with_store(
+    hello: &crate::ClientHello,
+    endpoint: &EndpointRecord,
+    server_cap: NonZeroU32,
+    store_id: Option<&str>,
 ) -> Result<crate::ServerHello> {
     if hello.version != endpoint.api {
         return Err(SeError::new(se_types::Detail::ApiVersionUnsupported(
@@ -113,12 +145,23 @@ pub fn negotiate_hello(
         .min(MAX_FRAME_BYTES as u32);
     let maximum_reply_bytes =
         NonZeroU32::new(effective).ok_or_else(|| refused("invalid reply cap"))?;
+    let negotiated_caps = hello.client_capabilities.is_some();
     Ok(crate::ServerHello {
         version: endpoint.api,
         epoch: endpoint.epoch.clone(),
         generation: endpoint.generation,
         maximum_reply_bytes,
         lease: None,
+        package_version: negotiated_caps.then(|| endpoint.package_version.clone()),
+        store_id: negotiated_caps
+            .then(|| store_id.map(str::to_owned))
+            .flatten(),
+        capabilities: negotiated_caps.then(|| {
+            crate::HOST_CAPABILITIES
+                .iter()
+                .map(|cap| (*cap).to_owned())
+                .collect()
+        }),
     })
 }
 #[derive(Serialize)]

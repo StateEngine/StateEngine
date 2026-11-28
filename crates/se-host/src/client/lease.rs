@@ -63,6 +63,7 @@ pub struct BlockingConnection {
     last_activity: Instant,
     issued_at: Instant,
     renew_needed: bool,
+    client_capabilities: Option<Vec<String>>,
 }
 pub(crate) fn native_error(cause: se_proc::native_ipc::IpcNativeError) -> SeError {
     let detail = match cause.code {
@@ -168,7 +169,34 @@ impl crate::client::BlockingIpcClient {
         options: &ClientOptions,
     ) -> Result<BlockingConnection> {
         let budget = Deadline::from_options(options)?;
-        Self::connect_before(endpoint, credential, maximum_reply_bytes, options, &budget)
+        Self::connect_before(
+            endpoint,
+            credential,
+            maximum_reply_bytes,
+            options,
+            &budget,
+            None,
+        )
+    }
+    /// Connect and opt in to `ServerHello` capability negotiation (`package_version`,
+    /// `store_id`, `capabilities`). Omitting capability negotiation preserves rolling-upgrade
+    /// compatibility with older hosts whose handshake rejects unknown fields.
+    pub fn connect_authenticated_with_capabilities(
+        endpoint: &crate::EndpointRecord,
+        credential: ClientCredential,
+        maximum_reply_bytes: std::num::NonZeroU32,
+        options: &ClientOptions,
+        client_capabilities: Vec<String>,
+    ) -> Result<BlockingConnection> {
+        let budget = Deadline::from_options(options)?;
+        Self::connect_before(
+            endpoint,
+            credential,
+            maximum_reply_bytes,
+            options,
+            &budget,
+            Some(client_capabilities),
+        )
     }
     /// Cold-start handshake with bounded retry on handshake timeouts only.
     /// Absent endpoints, auth refusals and cancellations still fail immediately.
@@ -191,6 +219,7 @@ impl crate::client::BlockingIpcClient {
                 maximum_reply_bytes,
                 options,
                 &warmup,
+                None,
             ) {
                 Ok(connection) => return Ok(connection),
                 Err(error) if !is_handshake_timeout(&error) => return Err(error),
@@ -217,6 +246,7 @@ impl crate::client::BlockingIpcClient {
         maximum_reply_bytes: std::num::NonZeroU32,
         options: &ClientOptions,
         budget: &Deadline,
+        client_capabilities: Option<Vec<String>>,
     ) -> Result<BlockingConnection> {
         use super::{auth, wire};
         // Start before the handshake: the server cannot begin its idle clock
@@ -286,6 +316,7 @@ impl crate::client::BlockingIpcClient {
             expected_generation: options.expected_generation,
             maximum_reply_bytes,
             authority,
+            client_capabilities: client_capabilities.clone(),
         };
         deadline.remaining()?;
         wire::write_frame_bounded(&mut stream, &auth::encode_client_hello(&sent)?, &deadline)?;
@@ -301,6 +332,7 @@ impl crate::client::BlockingIpcClient {
             last_activity,
             issued_at: last_activity,
             renew_needed: false,
+            client_capabilities,
         })
     }
     /// Recover credentials only from a verified native host connection.
@@ -478,6 +510,7 @@ impl BlockingConnection {
                 self.maximum_reply_bytes,
                 options,
                 &deadline,
+                self.client_capabilities.clone(),
             )?;
         }
         if matches!(call.authority, Some(crate::PresentedAuthority::Lease(_))) {

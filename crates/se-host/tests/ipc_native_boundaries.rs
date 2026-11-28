@@ -333,6 +333,7 @@ fn native_client_timeout_cancellation_and_reuse_survive_idle_tokio_accept() -> C
                 expected_generation: None,
                 maximum_reply_bytes: nonzero(4096)?,
                 authority: PresentedAuthority::Session(secret(3)?),
+                client_capabilities: None,
             })?;
             stream.write_all(hello.as_bytes())?;
             let refusal = se_host::client::wire::read_payload(

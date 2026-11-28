@@ -103,11 +103,17 @@ pub trait IpcPlatform: Send + Sync {
         endpoint: &EndpointRecord,
     ) -> se_types::Result<PeerProof>;
 }
+pub const MAX_CAPABILITIES: usize = 32;
+pub const MAX_CAPABILITY_LEN: usize = 64;
+pub const CAPABILITY_IPC_CAPABILITIES: &str = "ipc.capabilities";
+pub const HOST_CAPABILITIES: &[&str] = &[CAPABILITY_IPC_CAPABILITIES];
+
 pub struct ClientHello {
     pub version: ApiVersion,
     pub expected_generation: Option<Generation>,
     pub maximum_reply_bytes: NonZeroU32,
     pub authority: PresentedAuthority,
+    pub client_capabilities: Option<Vec<String>>,
 }
 pub enum PresentedAuthority {
     OwnerProof {
@@ -142,6 +148,9 @@ pub struct ServerHello {
     pub generation: Generation,
     pub maximum_reply_bytes: NonZeroU32,
     pub lease: Option<ConnectionTicket>,
+    pub package_version: Option<String>,
+    pub store_id: Option<String>,
+    pub capabilities: Option<Vec<String>>,
 }
 pub struct AuthorizedConnection {
     pub(crate) _private: (),

@@ -75,6 +75,7 @@ pub struct HostedRouter {
     pub(crate) sources: TranscriptBindings,
     pub(crate) context: AdmissionContext,
     response_bytes: std::num::NonZeroU32,
+    store_id: Option<String>,
     pub(crate) fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
     http_port: std::sync::Arc<std::sync::OnceLock<u16>>,
 }
@@ -91,6 +92,7 @@ impl HostedRuntime {
             sources: self.sources.clone(),
             context: self.admission_context(),
             response_bytes: self.response_bytes,
+            store_id: self.lease.store_id(),
             fenced: std::sync::Arc::clone(&self.fenced),
             http_port: std::sync::Arc::clone(&self.http_port),
         })
@@ -203,6 +205,7 @@ impl HostedRouter {
                 AuthorizedConnection { _private: () },
                 self.response_bytes,
                 grant.connection_ticket(),
+                self.store_id.as_deref(),
             )
             .await?;
         Ok(AcceptedPeer::Operation(Box::new(HostedConnection {
