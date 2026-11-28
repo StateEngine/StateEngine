@@ -12,6 +12,7 @@ mod acp_session_independent;
 mod acp_transport_independent;
 pub mod adoption;
 pub mod client;
+pub mod events;
 pub mod external;
 pub mod host_process;
 pub mod remote;

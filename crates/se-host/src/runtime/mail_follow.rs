@@ -182,3 +182,37 @@ async fn send(
         .reply_part(&response, &deadline, terminal)
         .await
 }
+
+impl AdmittedExchange {
+    /// Stream one bounded part of a long-lived reply (used by `events.subscribe`).
+    pub(crate) async fn reply_stream_part(
+        &mut self,
+        output: Result<OperationOutput>,
+        max_bytes: usize,
+        terminal: bool,
+    ) -> Result<()> {
+        let result = match output {
+            Ok(value) => IpcResult::Output(Box::new(value)),
+            Err(error) => IpcResult::Error(super::route::envelope(&error)?),
+        };
+        let response = IpcResponse {
+            version: se_types::API_VERSION,
+            request_id: self.request_id,
+            generation: self.connection.connection.negotiated().generation,
+            result,
+        };
+        let limit = (self
+            .connection
+            .connection
+            .negotiated()
+            .maximum_reply_bytes
+            .get() as usize)
+            .min(max_bytes);
+        crate::client::wire::encode_response(&response, limit)?;
+        let deadline = super::serve::options(Duration::from_secs(5))?;
+        self.connection
+            .connection
+            .reply_part(&response, &deadline, terminal)
+            .await
+    }
+}

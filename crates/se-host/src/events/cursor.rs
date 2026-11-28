@@ -1,0 +1,145 @@
+//! Opaque event-stream cursor bound to `(store_id, incarnation, generation, event_seq)`.
+//! Any malformed cursor, store/incarnation reset, generation change, or out-of-range
+//! sequence returns a typed `stale_cursor` or `generation_changed` refusal rather than
+//! silently dropping or splicing events.
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use se_store::StoreInfo;
+use se_types::{Generation, Result, SeError, StoreId};
+use serde::{Deserialize, Serialize};
+
+const CURSOR_PREFIX: &str = "evcur_v1_";
+const CURSOR_VERSION: u8 = 1;
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CursorPayload {
+    v: u8,
+    s: StoreId,
+    i: u64,
+    g: u64,
+    q: u64,
+}
+
+/// Encode an opaque cursor bound to the store's `(id, incarnation)`, host
+/// `generation`, and exact committed `event_seq` (`0` for an empty store).
+pub(crate) fn encode(info: &StoreInfo, generation: Generation, event_seq: u64) -> Result<String> {
+    let payload = CursorPayload {
+        v: CURSOR_VERSION,
+        s: info.id.clone(),
+        i: info.incarnation,
+        g: generation.get(),
+        q: event_seq,
+    };
+    let bytes = serde_json::to_vec(&payload)
+        .map_err(|err| se_core::scope::unreadable("event cursor", &err.to_string()))?;
+    Ok(format!("{CURSOR_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
+}
+
+/// Decode and strictly verify `after_cursor` against the current store identity,
+/// incarnation, host generation, and committed head sequence.
+pub(crate) fn decode_and_verify(
+    raw: &str,
+    info: &StoreInfo,
+    generation: Generation,
+) -> Result<u64> {
+    let encoded = raw.strip_prefix(CURSOR_PREFIX).ok_or_else(|| {
+        SeError::invalid(
+            "stale_cursor",
+            "an opaque event-stream cursor issued by this host; reconnect without after_cursor to re-baseline",
+        )
+    })?;
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
+        SeError::invalid(
+            "stale_cursor",
+            "a valid opaque event-stream cursor; reconnect without after_cursor to re-baseline",
+        )
+    })?;
+    let payload: CursorPayload = serde_json::from_slice(&bytes).map_err(|_| {
+        SeError::invalid(
+            "stale_cursor",
+            "a valid v1 event-stream cursor; reconnect without after_cursor to re-baseline",
+        )
+    })?;
+    if payload.v != CURSOR_VERSION {
+        return Err(SeError::invalid(
+            "stale_cursor",
+            "a v1 event-stream cursor; reconnect without after_cursor to re-baseline",
+        ));
+    }
+    if payload.s != info.id || payload.i != info.incarnation {
+        return Err(SeError::invalid(
+            "stale_cursor",
+            "a cursor matching the current store identity and incarnation (store was reset or restored); reconnect without after_cursor",
+        ));
+    }
+    if payload.g != generation.get() {
+        return Err(SeError::invalid(
+            "generation_changed",
+            "a cursor matching the current host generation; reconnect without after_cursor to re-baseline",
+        ));
+    }
+    let head_seq = info.head.as_ref().map_or(0, |pos| pos.sequence());
+    if payload.q > head_seq {
+        return Err(SeError::invalid(
+            "stale_cursor",
+            "a cursor at or behind the current committed store head; reconnect without after_cursor",
+        ));
+    }
+    Ok(payload.q)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use se_store::{StorePosition, StoreState};
+
+    fn test_info(
+        store_id: &str,
+        incarnation: u64,
+        head_seq: u64,
+    ) -> std::result::Result<StoreInfo, Box<dyn std::error::Error>> {
+        let id = store_id.parse::<StoreId>()?;
+        let head = (head_seq > 0)
+            .then(|| StorePosition::new_internal(id.clone(), incarnation, head_seq))
+            .transpose()?;
+        Ok(StoreInfo {
+            id,
+            incarnation,
+            schema_version: 17,
+            head,
+            state: StoreState::Ready,
+        })
+    }
+
+    #[test]
+    fn round_trip_and_mismatch_refusals() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let info = test_info("store_00000000-0000-7000-8000-000000000001", 1, 42)?;
+        let gen1 = Generation::new(1)?;
+        let gen2 = Generation::new(2)?;
+        let cur = encode(&info, gen1, 17)?;
+        assert_eq!(decode_and_verify(&cur, &info, gen1)?, 17);
+
+        let err = decode_and_verify(&cur, &info, gen2)
+            .err()
+            .ok_or("expected generation_changed")?;
+        assert!(err.to_string().contains("generation_changed"), "{err}");
+
+        let restored = test_info("store_00000000-0000-7000-8000-000000000001", 2, 42)?;
+        let err = decode_and_verify(&cur, &restored, gen1)
+            .err()
+            .ok_or("expected stale_cursor on incarnation mismatch")?;
+        assert!(err.to_string().contains("stale_cursor"), "{err}");
+
+        let behind = test_info("store_00000000-0000-7000-8000-000000000001", 1, 10)?;
+        let err = decode_and_verify(&cur, &behind, gen1)
+            .err()
+            .ok_or("expected stale_cursor ahead of head")?;
+        assert!(err.to_string().contains("stale_cursor"), "{err}");
+
+        let err = decode_and_verify("not-a-cursor", &info, gen1)
+            .err()
+            .ok_or("expected stale_cursor on malformed")?;
+        assert!(err.to_string().contains("stale_cursor"), "{err}");
+        Ok(())
+    }
+}

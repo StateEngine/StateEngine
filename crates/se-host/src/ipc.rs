@@ -173,6 +173,7 @@ pub enum IpcRequest {
     #[cfg(feature = "remote")]
     RemoteOwner(Box<crate::remote::OwnerInput>),
     External(Box<crate::external::ExternalRequest>),
+    Subscribe(Box<crate::events::SubscribeRequest>),
     Operation(RawOperation),
     Hook(ClaudeHookInput),
 }
