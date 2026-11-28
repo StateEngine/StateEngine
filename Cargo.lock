@@ -1554,7 +1554,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "se"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "clap",
  "regex",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "se-adoption"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-config",
  "se-core",
@@ -1605,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "se-agent-observation"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-config",
  "se-core",
@@ -1619,7 +1619,7 @@ dependencies = [
 
 [[package]]
 name = "se-atlas"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-types",
  "serde_json",
@@ -1627,7 +1627,7 @@ dependencies = [
 
 [[package]]
 name = "se-atlas-host"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rusqlite",
  "se-atlas",
@@ -1645,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "se-atlas-index"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "blake3",
  "ignore",
@@ -1658,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "se-atlas-query"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "blake3",
  "rusqlite",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "se-atlas-records"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-core",
  "se-store",
@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "se-atlas-search"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "grep-regex",
  "grep-searcher",
@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "se-atlas-service"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "blake3",
  "ignore",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "se-cli-spec"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "clap",
  "se-config",
@@ -1720,7 +1720,7 @@ dependencies = [
 
 [[package]]
 name = "se-config"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "schemars",
  "se-types",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "se-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "schemars",
  "se-config",
@@ -1743,7 +1743,7 @@ dependencies = [
 
 [[package]]
 name = "se-custody"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-types",
  "serde",
@@ -1752,11 +1752,11 @@ dependencies = [
 
 [[package]]
 name = "se-fsevents"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "se-harness"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64",
  "futures-util",
@@ -1790,7 +1790,7 @@ dependencies = [
 
 [[package]]
 name = "se-harness-registry"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1798,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "se-history-import"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-core",
  "se-harness",
@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "se-host"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -1861,11 +1861,11 @@ dependencies = [
 
 [[package]]
 name = "se-identifiers"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "se-local-socket"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-proc",
  "tokio",
@@ -1875,7 +1875,7 @@ dependencies = [
 
 [[package]]
 name = "se-mcp"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-atlas",
  "se-core",
@@ -1888,7 +1888,7 @@ dependencies = [
 
 [[package]]
 name = "se-native-ipc"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "se-native-path",
@@ -1902,7 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "se-native-path"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -1910,7 +1910,7 @@ dependencies = [
 
 [[package]]
 name = "se-native-proc"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "rusqlite",
@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "se-proc"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "se-custody",
@@ -1950,7 +1950,7 @@ dependencies = [
 
 [[package]]
 name = "se-provider-image"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-proc",
  "se-types",
@@ -1959,7 +1959,7 @@ dependencies = [
 
 [[package]]
 name = "se-remote"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "futures-util",
  "se-core",
@@ -1974,7 +1974,7 @@ dependencies = [
 
 [[package]]
 name = "se-remote-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "clap",
  "se-cli-spec",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "se-remote-host"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -2016,7 +2016,7 @@ dependencies = [
 
 [[package]]
 name = "se-render"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-config",
  "se-core",
@@ -2030,7 +2030,7 @@ dependencies = [
 
 [[package]]
 name = "se-repository"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "git2",
  "se-native-path",
@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "se-secode-image"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-core",
  "se-proc",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "se-secode-service"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "futures-util",
  "reqwest",
@@ -2071,7 +2071,7 @@ dependencies = [
 
 [[package]]
 name = "se-source-watch"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "se-fsevents",
@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "se-ssh-transport"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-harness",
  "se-proc",
@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "se-state-files"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "rusqlite",
@@ -2107,7 +2107,7 @@ dependencies = [
 
 [[package]]
 name = "se-store"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rusqlite",
  "se-proc",
@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "se-store-codec"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-store-contract",
  "se-types",
@@ -2135,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "se-store-contract"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rusqlite",
  "se-types",
@@ -2147,7 +2147,7 @@ dependencies = [
 
 [[package]]
 name = "se-store-sql"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "rusqlite",
  "se-proc",
@@ -2161,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "se-tool-capture"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-core",
  "se-store",
@@ -2173,7 +2173,7 @@ dependencies = [
 
 [[package]]
 name = "se-trusted-path"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "se-proc",
@@ -2182,7 +2182,7 @@ dependencies = [
 
 [[package]]
 name = "se-types"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "schemars",
  "se-harness-registry",
@@ -2196,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "se-uninstall"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "se-custody",
  "se-native-ipc",
@@ -2211,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "se-user-manager"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "se-state-files",
