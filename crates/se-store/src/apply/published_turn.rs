@@ -7,6 +7,9 @@ use crate::published_turn::PublishedTurn;
 
 /// Largest stored body: the same bound captured turns use.
 const MAX_BODY: usize = 1024 * 1024;
+/// Decision and paths without the chat text: what metadata history pages, such
+/// as the Atlas feed's 128 KiB read, receive. The operation enforces the same.
+const MAX_METADATA: usize = 64 * 1024;
 
 pub(super) fn apply(
     c: &Connection,
@@ -71,6 +74,7 @@ pub(super) fn apply(
     let payload = match body {
         Some(text) => {
             let text = codec::text(text.as_materialized()?, MAX_BODY)?;
+            metadata_within_bound(&text)?;
             Some(payload(c, seq, "body", &text)?)
         }
         None => None,
@@ -110,5 +114,17 @@ pub(super) fn apply(
         ],
     )
     .map_err(sql)?;
+    Ok(())
+}
+/// The prose is one JSON object whose decision and paths fit `MAX_METADATA`.
+fn metadata_within_bound(text: &str) -> StoreResult<()> {
+    let shape = || invalid("published turn prose must be one JSON object");
+    let mut prose: serde_json::Value = serde_json::from_str(text).map_err(|_| shape())?;
+    prose.as_object_mut().ok_or_else(shape)?.remove("text");
+    if prose.to_string().len() > MAX_METADATA {
+        return Err(invalid(
+            "published turn decision and paths exceed 64 KiB; list fewer paths",
+        ));
+    }
     Ok(())
 }
