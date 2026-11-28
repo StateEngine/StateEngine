@@ -133,11 +133,13 @@ The client replies with a `ClientHello`:
     4. `challenge.image_sha256` raw bytes (32 bytes)
     5. `challenge.nonce` (32 bytes)
     6. Client `nonce` (32 bytes)
-    7. Canonical native OS peer binding bytes observed on the channel: `b"se.native.peer/v1"` followed by `u32`-big-endian length-prefixed fields for:
-       - principal (`b"unix"` + `uid: u32 BE`, or `b"windows"` + UTF-8 `sid`),
-       - `pid: u32 BE`,
-       - process start identity (`b"linux"` + `start_ticks: u64 BE`, `b"windows"` + `creation_filetime: u64 BE`, or `b"macos"` + `start_seconds: u64 BE` + `start_micros: u32 BE`),
-       - `image_sha256` raw bytes (32 bytes).
+    7. Canonical native OS peer binding bytes observed on the channel: the unprefixed header `b"se.native.peer/v1"` followed by these components, where **every component (including each platform tag and each value) is individually `u32`-big-endian length-prefixed**:
+       - Principal tag: `b"unix"` or `b"windows"`
+       - Principal value: `uid` (`u32` BE, 4 bytes) for Unix, or UTF-8 `sid` bytes for Windows
+       - Process ID: `pid` (`u32` BE, 4 bytes)
+       - Start-identity OS tag: `b"linux"`, `b"windows"`, or `b"macos"`
+       - Start-identity value(s): `start_ticks` (`u64` BE, 8 bytes) on Linux; `creation_filetime` (`u64` BE, 8 bytes) on Windows; `start_seconds` (`u64` BE, 8 bytes) followed by a separate length-prefixed `start_micros` (`u32` BE, 4 bytes) on macOS
+       - Executable digest: `image_sha256` raw bytes (32 bytes)
   - `external_session`: `[u8; N]` — UTF-8 bytes of an owner-approved external seat capability (`sext1.<hex>`), held in transport memory only.
   - `external_claim`: `ExternalClaimBootstrap` (`{ "project": ProjectId | null, "cwd": NativePath, "agent": String, "connection_nonce": [u8; 32] }`) — opens a pending external seat claim awaiting out-of-band `se external approve <claim_id>`.
   - `session` / `launch` / `guest_bootstrap` / `session_bootstrap` / `lease`: Managed session and read-only guest bootstrap credentials used by `se` itself.
@@ -240,18 +242,22 @@ Error (`state: "error"`):
     "state": "error",
     "value": {
       "schema": "se.error/v1",
-      "code": "...",
-      "class": "...",
+      "code": "owner-required",
+      "detail": { "op": "project.init" },
+      "retry": { "kind": "never" },
+      "class": "unauthorized",
       "exit": 1,
-      "message": "...",
-      "remedy": { "text": "...", "command": null },
-      "retry": { "kind": "never" }
+      "message": "`project.init` is an owner command; agent sessions can't run it",
+      "remedy": {
+        "text": "Use an owner terminal; unsetting SE_SESSION alone does not establish authority",
+        "command": null
+      }
     }
   }
 }
 ```
 
-(`ErrorEnvelope` flattens `ErrorBody` into the envelope, so typed per-code detail fields appear at the top level alongside `schema`, `code`, `class`, `exit`, `message`, `remedy`, and `retry`.)
+(`ErrorEnvelope` flattens `ErrorBody` into the envelope root, so `"code"`, `"detail"` (the typed per-code payload object), `"retry"`, and optional `"recovery"` / `"far"` appear alongside `"schema"`, `"class"`, `"exit"`, `"message"`, and `"remedy"`.)
 
 ---
 
