@@ -40,14 +40,36 @@ impl OwnerPresence {
         }
     }
     #[cfg(feature = "listener")]
-    pub(crate) fn passes(&self, peer_owner: &str) -> bool {
+    pub(crate) fn passes_owner_cli(&self, peer_owner: &str) -> bool {
         !self.os_owner.is_empty()
             && self.os_owner == peer_owner
+            && !self.session_present
+            && self.outside_agent_tree
+    }
+    #[cfg(feature = "listener")]
+    pub(crate) fn require_owner_cli(
+        presence: Option<&Self>,
+        peer: &crate::PeerProof,
+        op: &str,
+    ) -> se_types::Result<()> {
+        let peer_owner = match peer.native().principal() {
+            se_proc::native_ipc::IpcPrincipal::Unix { uid } => uid.to_string(),
+            se_proc::native_ipc::IpcPrincipal::Windows { sid } => sid.clone(),
+        };
+        if presence.is_some_and(|observed| observed.passes_owner_cli(&peer_owner)) {
+            Ok(())
+        } else {
+            Err(se_types::SeError::new(se_types::Detail::OwnerRequired(
+                se_types::details::OwnerRequired { op: op.into() },
+            )))
+        }
+    }
+    #[cfg(feature = "listener")]
+    pub(crate) fn passes(&self, peer_owner: &str) -> bool {
+        self.passes_owner_cli(peer_owner)
             && self.stdin_console
             && self.stdout_console
-            && !self.session_present
             && !self.provider_marker_present
-            && self.outside_agent_tree
     }
     #[cfg(feature = "listener")]
     pub(crate) fn refusal_reason(&self, peer_owner: &str) -> String {

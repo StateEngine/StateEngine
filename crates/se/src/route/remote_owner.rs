@@ -118,7 +118,9 @@ fn bootstrap_default_workspace(cx: &Bootstrap) -> Result<()> {
                     .ok_or_else(|| SeError::invalid("remote workspace", "a native UTF-8 path"))?
                     .to_owned(),
             ),
+            native_root: None,
             name: Some("default".into()),
+            resolved_name: None,
             agent: "main".into(),
             provider: None,
             model: None,

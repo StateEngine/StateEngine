@@ -303,19 +303,22 @@ Run se help remove or se help uninstall before choosing the scope.
         body: r#"An external seat lets an agent running outside StateEngine's managed launcher
 join a project's mail, status, history and Atlas tools over stdio MCP.
 
-1. Mark an agent external-eligible (Owner terminal):
+1. Mark an agent external-eligible (Owner authority outside any StateEngine-managed agent tree):
    se agent add NAME --external
 2. Connect the external client's MCP bridge:
    se mcp --as NAME
    The bridge prints a pending claim ID to stderr while parking on its native
    IPC channel for Owner approval.
-3. Inspect and approve out of band (Owner terminal only; not an MCP tool):
+3. Inspect and approve out of band (Owner authority outside any StateEngine-managed
+   agent tree — human terminal or the owner's own standalone agent; StateEngine child
+   seats are refused; not an MCP tool):
    se external list
    se external approve CLAIM-ID
    Approval is one-shot, enforces per-agent exclusivity against managed launches
    and other external seats, and delivers the session capability directly over
    the waiting bridge's native channel (never in prompts, argv, env or files).
-4. Revoke an active external seat at any time (Owner terminal only):
+4. Revoke an active external seat at any time (Owner authority outside any
+   StateEngine-managed agent tree; StateEngine child seats are refused):
    se external revoke NAME
    Disconnecting the bridge or restarting the host also fences and expires the seat.
 5. Wait for incoming mail without polling:

@@ -37,7 +37,9 @@ pub(super) fn finish(
         changed.push("registered the home owner".into());
     }
     let root = NativePath::from_local(repository.path.clone())?;
-    let found = registered_project(store, &admission, input, repository, &root)?;
+    let mut snap = super::super::select::open_snapshot(store, &admission)?;
+    let found = project::find_registered_project(&mut snap, input, &repository.name, &root);
+    let found = execute::finish_read(found, snap.close().map_err(|e| store_error(&e)))?;
     let created = found.is_none();
     let id = match found {
         Some(id) => id,
@@ -74,41 +76,33 @@ pub(super) fn finish(
     if config_changed {
         changed.push("persisted the setup configuration".into());
     }
-    let (metadata, project_name) = project_metadata(store, &admission, &id)?;
+    let mut snap = super::super::select::open_snapshot(store, &admission)?;
+    let meta = project::read_project_metadata(&mut snap, &id);
+    let (metadata, project_name) =
+        execute::finish_read(meta, snap.close().map_err(|e| store_error(&e)))?;
     let command = AgentCommand::launch_in_home(&agent.id, &cx.home, &id, true)
         .ok_or_else(|| scope::unreadable("first launch command", AgentCommand::HOME_UNAVAILABLE))?;
-    let import_hint = import_hint(repository);
-    Ok(InitOutput {
-        import_hint,
-        idempotency_key: input.idempotency_key.clone(),
-        outcome: outcome(created, repository),
-        project: project_view(&id, project_name, repository, &metadata)?,
-        repo: RepositoryView {
-            root: repository.path.display().to_string(),
-            git: repository.git.clone(),
-            files_touched: 0,
-        },
-        owner: OwnerView {
-            human_id: human.clone(),
+    Ok(project::build_init_output(
+        project::InitOutputParts {
+            id,
+            outcome: outcome(created, repository),
+            project_name,
+            metadata,
+            row: agent,
+            agent_created,
+            human,
             os_user: observed.os_owner().into(),
-        },
-        home: cx.home.display().to_string(),
-        agent: agent_view(&agent, agent_created, configuration)?,
-        profile: InitProfile {
-            schema: "stateengine-init/v1".into(),
-            project: id.clone(),
+            home: cx.home.display().to_string(),
             repo_root: repository.path.display().to_string(),
-            registry_root: cx.home.display().to_string(),
-            keys_dir: cx.home.display().to_string(),
-            human_id: human,
-            agent_id: agent.id.clone(),
+            git: repository.git.clone(),
+            import_hint: import_hint(repository),
             native_server_port: port,
+            idempotency_key: input.idempotency_key.clone(),
+            changed,
+            next: super::super::command_hint::next(command, "Launch your first agent"),
         },
-        integrations: vec![],
-        changed,
-        next: super::super::command_hint::next(command, "Launch your first agent"),
-        launch: None,
-    }
+        configuration,
+    )?
     .into())
 }
 fn setup_owner(owners: &[HumanId]) -> Result<HumanId> {
@@ -143,7 +137,7 @@ fn ensure_owner(
     let mut snap = super::super::select::open_snapshot(store, admission)?;
     let batch = project::owner(
         &kernel,
-        phase_key(&input.idempotency_key, phase)?,
+        project::phase_key(&input.idempotency_key, phase)?,
         &mut Cx {
             read: &mut snap,
             admission,
@@ -152,37 +146,6 @@ fn ensure_owner(
     snap.close().map_err(|e| store_error(&e))?;
     append(store, lease, batch?, changed)?;
     Ok(true)
-}
-/// The existing registration of this repository's root, if any.
-fn registered_project(
-    store: &SqliteDirect,
-    admission: &Admission,
-    input: &ProjectInit,
-    repository: &repository::Repository,
-    root: &NativePath,
-) -> Result<Option<ProjectId>> {
-    let mut found = None;
-    for record in select::projects(store, admission)? {
-        let Some((id, registered, roots)) = select::active_project(&record.current.body) else {
-            continue;
-        };
-        if roots.iter().any(|candidate| candidate.path == *root) {
-            if found.is_some() {
-                return Err(scope::unreadable(
-                    "setup project",
-                    "repository has more than one registration",
-                ));
-            }
-            if input.name.is_some() && registered != repository.name {
-                return Err(SeError::invalid(
-                    "project name",
-                    "the existing registered name for this repository",
-                ));
-            }
-            found = Some(id.clone());
-        }
-    }
-    Ok(found)
 }
 fn register_project(
     store: &mut SqliteDirect,
@@ -233,7 +196,7 @@ fn register_project(
     }
     Ok(project)
 }
-fn record_git_identity(
+pub(super) fn record_git_identity(
     repository: &repository::Repository,
     id: &ProjectId,
     created: bool,
@@ -265,7 +228,7 @@ fn record_git_identity(
         }
     }
 }
-fn import_hint(repository: &repository::Repository) -> Option<String> {
+pub(super) fn import_hint(repository: &repository::Repository) -> Option<String> {
     let node_source = repository.path.join(".stateengine/projects.jsonl");
     if cfg!(feature = "import") {
         match se_proc::NativeSourcePin::open(&node_source) {
@@ -281,27 +244,6 @@ fn import_hint(repository: &repository::Repository) -> Option<String> {
         None
     }
 }
-fn project_metadata(
-    store: &SqliteDirect,
-    admission: &Admission,
-    id: &ProjectId,
-) -> Result<(se_store::ProjectionRecord, String)> {
-    let mut snap = super::super::select::open_snapshot(store, admission)?;
-    let metadata = scope::require_present(
-        snap.project(id.clone()).map_err(|e| store_error(&e))?,
-        "initialized project",
-        "Read the original project metadata in this data home, then retry se init with its original --key; preserve existing project and machine identities.",
-    )?;
-    snap.close().map_err(|e| store_error(&e))?;
-    let Some((_, project_name, _)) = select::active_project(&metadata.current.body) else {
-        return Err(scope::unreadable(
-            "initialized project",
-            "active project metadata is unavailable",
-        ));
-    };
-    let project_name = project_name.to_owned();
-    Ok((metadata, project_name))
-}
 fn outcome(created: bool, repository: &repository::Repository) -> InitOutcome {
     if created {
         if repository.nonempty || repository.git.is_some() {
@@ -312,43 +254,4 @@ fn outcome(created: bool, repository: &repository::Repository) -> InitOutcome {
     } else {
         InitOutcome::AlreadyPresent
     }
-}
-fn agent_view(
-    agent: &AgentRow,
-    agent_created: bool,
-    configuration: &se_config::config_policy::ConfigFile,
-) -> Result<InitialAgent> {
-    Ok(InitialAgent {
-        harness: agent.harness.clone(),
-        id: agent.id.clone(),
-        name: agent.name.clone(),
-        outcome: if agent_created {
-            IdentityOutcome::Created
-        } else {
-            IdentityOutcome::Existing
-        },
-        provider: agent.provider,
-        model: agent.model.clone(),
-        permission_profile: project::saved_profile(configuration, agent)?,
-    })
-}
-fn project_view(
-    id: &ProjectId,
-    name: String,
-    repository: &repository::Repository,
-    metadata: &se_store::ProjectionRecord,
-) -> Result<ProjectView> {
-    Ok(ProjectView {
-        id: id.clone(),
-        name,
-        root: repository.path.display().to_string(),
-        registered_at: receipt::timestamp(
-            metadata
-                .original
-                .as_deref()
-                .unwrap_or(&metadata.current)
-                .recorded_at_us,
-        )?,
-        git: None,
-    })
 }

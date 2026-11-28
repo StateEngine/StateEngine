@@ -239,9 +239,12 @@ are not shipped.
   a dirty worktree after those safety checks pass).
 - **External seats.** To let an external MCP client join a project without StateEngine
   launching its process, register the agent with `se agent add NAME --external`, connect
-  the client through `se mcp --as NAME`, and approve the printed claim out of band from an
-  Owner terminal with `se external list` and `se external approve CLAIM_ID`. Revoke at any
-  time with `se external revoke NAME`. External seats enforce per-agent exclusivity against
+  the client through `se mcp --as NAME`, and approve the printed claim out of band with
+  Owner authority outside any StateEngine-managed agent tree (a human terminal or your own
+  standalone agent; StateEngine child seats are refused) using `se external list` and
+  `se external approve CLAIM_ID`. Revoke at any time with `se external revoke NAME`.
+  Destructive operations (`forget`, `restore`, `remove`, `uninstall` without `--yes`, and
+  `doctor --fix`) still require a human terminal. External seats enforce per-agent exclusivity against
   managed launches, expire after 8 hours or on bridge disconnect/host restart, and use
   `se msg wait [--as NAME] [--after CURSOR] [--timeout SECS]` for zero-polling blocking
   mail waits on a separate CLI channel (keeping MCP stdio pipes non-blocking). Run

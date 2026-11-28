@@ -321,11 +321,15 @@ fn send_owner_external(
     let caller = crate::route::admit::observe(cx, &mut phase, &files)?;
     phase.close().map_err(|e| store_error(&e))?;
     drop(reader);
-    se_core::admission::require_human_terminal(
-        "external seat control",
-        &caller.admission,
-        &caller.terminal,
-    )?;
+    if !matches!(caller.admission.actor, se_store::Actor::Human(_))
+        || caller.admission.session.is_some()
+    {
+        return Err(SeError::new(se_types::Detail::OwnerRequired(
+            se_types::details::OwnerRequired {
+                op: "external seat control".into(),
+            },
+        )));
+    }
     let owner = caller.owner.as_ref().ok_or_else(|| {
         SeError::invalid("external seat control", "a verified native human Owner")
     })?;

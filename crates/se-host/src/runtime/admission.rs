@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     HandshakeInput, PeerProof, PendingIpcHandshake, PresentedAuthority, RawOperation,
-    decode_owner_inventory,
+    client::presence::OwnerPresence, decode_owner_inventory,
 };
 use se_core::{
     admission::HumanTerminal,
@@ -269,6 +269,12 @@ impl AdmissionContext {
                         se_proc::native_ipc::IpcPrincipal::Unix { uid } => uid.to_string(),
                         se_proc::native_ipc::IpcPrincipal::Windows { sid } => sid.clone(),
                     };
+                    // Raw Owner IPC callers without CLI presence are still verified by
+                    // `self.owner_peer(phase, peer)?` above and receive `HumanTerminal::Refused`
+                    // below, so `human_only` ops always fail closed when `presence` is absent.
+                    if presence.is_some() {
+                        OwnerPresence::require_owner_cli(presence, peer, "owner IPC")?;
+                    }
                     let terminal = match presence {
                         Some(observed) if observed.passes(&peer_owner) => {
                             HumanTerminal::OutsideAgentTree
@@ -380,6 +386,9 @@ impl AdmissionContext {
                 se_core::admission::authorize_external_seat(operation.meta(), &admission)?;
             } else {
                 se_core::admission::authorize(operation.meta(), &admission)?;
+            }
+            if matches!(&operation, ops::AnyOp::ProjectInit(_)) {
+                OwnerPresence::require_owner_cli(metadata.presence.as_ref(), peer, "project.init")?;
             }
             let mut facts = allocate_facts()?;
             facts.door = if matches!(&operation, ops::AnyOp::HookClaude(_)) {

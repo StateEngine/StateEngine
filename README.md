@@ -55,7 +55,7 @@ You don't have to abandon your editor, terminal, or favorite coding assistant. S
 | --- | --- | --- |
 | **Claude Code & Codex** | First-class built-in support: auto-wired MCP, pre-edit Atlas hooks, exact session resume, per-agent model/endpoint overrides, and session adoption (`se init --adopt` on Linux & Windows) | `se init --provider claude\|codex` |
 | **Universal ACP agents** | Works with virtually any agent that speaks Agent Client Protocol v1—auto-detects **Antigravity**, **Cursor**, **Grok**, **OpenCode**, **Gemini**, **DeepSeek**, **Oh My Pi**, **Qwen Code**, **Goose**, **Hermes**, **Kimi**, **Auggie**, and **Cline**, plus any custom ACP agent via `se harness add` | `se init --harness <name>` |
-| **Desktop GUIs & Editors (External Seats)** | Keep using desktop apps, chat GUIs, or MCP-enabled editors as named agents on your project team—Owner-approved out of band, with identity, agent mail, and working notes | `se agent add <name> --external` + `se mcp --as <name>` |
+| **Desktop GUIs & Editors (External Seats)** | Keep using desktop apps, chat GUIs, or MCP-enabled editors as named agents on your project team—Owner-approved out of band (from a human terminal or your own standalone agent outside StateEngine-managed agent trees; child seats are refused), with identity, agent mail, and working notes | `se agent add <name> --external` + `se mcp --as <name>` |
 | **Any MCP client** | Connect any read-only MCP tool to inspect project status, Atlas code navigation, captain state, and recorded history | `se mcp` |
 
 See [docs/HARNESSES.md](docs/HARNESSES.md) for permission profiles, per-agent model routing, and custom ACP harness descriptors.
@@ -184,7 +184,7 @@ se status
 - **Verified native resume:** On supported harnesses with a verified saved session, `se launch main --resume` (or `--resume SESSION_ID`) reopens the exact provider conversation—and refuses with a clear remedy rather than silently starting over if the session cannot be verified.
 - **Cross-harness handoffs (`stateengine_handoff_export`):** Export a deterministic, byte-bounded, model-agnostic handoff packet from committed turns and working notes to move work between Claude Code, Codex, and ACP agents—or into a fresh session when context fills up.
 - **Adopt sessions you already started:** On Linux and Windows, `se init --adopt --provider claude` (or `codex`) wires hooks into sessions you launch directly so they capture turns and receive project mail without StateEngine taking over or stopping them.
-- **Join from a desktop GUI or editor:** Register an external seat and approve it out of band from your terminal:
+- **Join from a desktop GUI or editor:** Register an external seat and approve it out of band with Owner authority outside any StateEngine-managed agent tree (human terminal or your own standalone agent; StateEngine child seats are refused, while destructive ops still require a human terminal):
 
 <details>
 <summary>Connect an external GUI or editor seat</summary>

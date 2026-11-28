@@ -503,10 +503,10 @@ fn terminal_uninstall(
         .output_executable()?)
 }
 
-/// Protects: F3 on both native platforms — init while a real host holds the writer lease names down/init, preserves identities and history, then the same requested project initializes after graceful down.
+/// Protects: live init on a running host registers a second project over authenticated Owner IPC without displacing the host or changing home identities.
 #[cfg(any(target_os = "linux", windows))]
 #[test]
-fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
+fn live_host_init_registers_second_project_without_down() -> Check {
     use se_store::{ReadStore, StoreFactory};
     let _serial = RUNTIME
         .lock()
@@ -538,50 +538,42 @@ fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
         .collect::<Result<Vec<_>, _>>()?;
     let reader = present(se_store::SqliteFactory::open_reader(&f.options)?)?;
     let before = reader.info()?;
-    for json in [true, false] {
-        let output = command(&image, home, json)
+    let live_registered = checked(
+        command(&image, home, true)
             .arg("init")
             .arg("--repo")
             .arg(&second)
             .args(["--name", "after-host"])
-            .output_executable()?;
-        assert_eq!(output.status.code(), Some(1));
-        let diagnostic = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            diagnostic.contains("error[state-conflict]"),
-            "wrong F3 refusal: {diagnostic}"
-        );
-        assert!(
-            diagnostic.contains("se down") && diagnostic.contains("se init"),
-            "missing F3 down/init alternative: {diagnostic}"
-        );
-        if json {
-            assert_eq!(value(&output)?["code"], "state-conflict");
-        } else {
-            assert!(output.stdout.is_empty());
-        }
-        assert!(host.live()?, "refused init displaced the exact live host");
+            .output_executable()?,
+    )?;
+    assert_ne!(
+        live_registered["project"]["id"],
+        initialized["project"]["id"]
+    );
+    assert_eq!(live_registered["project"]["name"], "after-host");
+    assert!(host.live()?, "live init displaced the exact live host");
+    assert_ne!(
+        reader.info()?.head,
+        before.head,
+        "live init did not write durable events"
+    );
+    for (name, bytes) in &retained {
         assert_eq!(
-            reader.info()?.head,
-            before.head,
-            "refused init wrote durable events"
-        );
-        for (name, bytes) in &retained {
-            assert_eq!(
-                std::fs::read(home.join(name))?,
-                *bytes,
-                "refused init changed {name}"
-            );
-        }
-        assert_eq!(
-            std::fs::read_dir(&second)?.count(),
-            0,
-            "refused init changed the repository"
+            std::fs::read(home.join(name))?,
+            *bytes,
+            "live init changed {name}"
         );
     }
-    // Exercise the documented recovery through the real CLI. The fixture's
-    // direct IPC stop has a five-second budget and must cold-prove this much
-    // larger test executable; it is not the owner's ordinary `se down` path.
+    let repeated = checked(
+        command(&image, home, true)
+            .arg("init")
+            .arg("--repo")
+            .arg(&second)
+            .args(["--name", "after-host"])
+            .output_executable()?,
+    )?;
+    assert_eq!(repeated["project"]["id"], live_registered["project"]["id"]);
+    assert_eq!(repeated["outcome"], "already-present");
     let stopped = checked(
         command(&image, home, true)
             .arg("down")
@@ -589,21 +581,6 @@ fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
     )?;
     assert_eq!(stopped["complete"], true);
     assert!(!host.live()?, "public down retained the exact live host");
-    let retried = checked(
-        command(&image, home, true)
-            .arg("init")
-            .arg("--repo")
-            .arg(&second)
-            .args(["--name", "after-host"])
-            .output_executable()?,
-    )?;
-    assert_ne!(retried["project"]["id"], initialized["project"]["id"]);
-    assert_eq!(retried["project"]["name"], "after-host");
-    assert_ne!(
-        reader.info()?.head,
-        before.head,
-        "legal init retry did not write the new project"
-    );
     assert!(home.join("state.db").try_exists()?);
     Ok(())
 }

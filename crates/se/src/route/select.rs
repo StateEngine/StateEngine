@@ -23,18 +23,6 @@ pub fn budget(after: Option<se_types::Cursor>) -> Result<ReadBudget> {
         deadline: Duration::from_secs(1),
     })
 }
-pub fn projects<R: ReadStore>(reader: &R, admission: &Admission) -> Result<Vec<ProjectionRecord>> {
-    inventory(reader, admission, None)
-}
-pub(super) fn inventory<R: ReadStore>(
-    reader: &R,
-    admission: &Admission,
-    query: Option<RemovedProjectQuery>,
-) -> Result<Vec<ProjectionRecord>> {
-    let mut snapshot = open_snapshot(reader, admission)?;
-    let result = inventory_at(&mut snapshot, query);
-    super::execute::finish_read(result, snapshot.close().map_err(|e| store_error(&e)))
-}
 /// Opens a read snapshot under the caller's admitted read scope.
 pub(super) fn open_snapshot<R: ReadStore>(
     reader: &R,

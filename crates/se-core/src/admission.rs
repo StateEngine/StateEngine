@@ -161,7 +161,7 @@ pub fn authorize_file_owner(
     human_only: bool,
     observed: &OwnerObservations,
 ) -> Result<()> {
-    if session_present || observed.provider_marker {
+    if session_present {
         return Err(SeError::new(Detail::OwnerRequired(
             details::OwnerRequired { op: op.into() },
         )));
@@ -189,13 +189,15 @@ pub fn authorize_file_owner(
         AgentTreeCheck::Unreadable {reason}=>return Err(SeError::new(Detail::SourceUnreadable(details::SourceUnreadable {subject:"native agent ancestry".into(),reason:reason.clone(),next_step:"Restore access or let the runtime resolve its recorded custody; missing endpoint information is not proof of no agents.".into()}))),
         AgentTreeCheck::Outside=>(),
     }
-    if human_only && !(observed.stdin_console && observed.stdout_console) {
+    if human_only
+        && !(observed.stdin_console && observed.stdout_console && !observed.provider_marker)
+    {
         return Err(SeError::new(Detail::HumanTerminalRequired(
             details::HumanTerminalRequired {
                 op: op.into(),
                 reason: format!(
-                    "stdin_console={}, stdout_console={}; stdin or stdout is redirected, captured or otherwise not attached to a console/TTY; both must remain attached to the terminal",
-                    observed.stdin_console, observed.stdout_console
+                    "stdin_console={}, stdout_console={}, provider_marker={}; this operation requires a human terminal outside any coding-agent environment",
+                    observed.stdin_console, observed.stdout_console, observed.provider_marker
                 ),
             },
         )));

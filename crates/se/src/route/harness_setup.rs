@@ -263,7 +263,7 @@ fn authorize(cx: &Bootstrap, files: Option<&Files>) -> Result<()> {
         "harness.add",
         observed.os_owner(),
         cx.session.is_some(),
-        true,
+        false,
     )
 }
 

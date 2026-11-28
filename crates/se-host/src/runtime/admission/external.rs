@@ -480,8 +480,13 @@ impl AdmissionContext {
                 "an owner-authenticated native terminal connection without per-call overrides",
             ));
         }
-        let (admission, terminal) = self.caller(phase, peer, connection, None, grant, presence)?;
-        se_core::admission::require_human_terminal(op, &admission, &terminal)
+        let (admission, _terminal) = self.caller(phase, peer, connection, None, grant, presence)?;
+        if !matches!(admission.actor, Actor::Human(_)) || admission.session.is_some() {
+            return Err(SeError::new(se_types::Detail::OwnerRequired(
+                se_types::details::OwnerRequired { op: op.into() },
+            )));
+        }
+        crate::client::presence::OwnerPresence::require_owner_cli(presence, peer, op)
     }
 }
 

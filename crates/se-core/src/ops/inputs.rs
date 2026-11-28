@@ -73,7 +73,14 @@ pub struct ProjectInit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     pub repo: Option<String>,
+    /// Canonical native repository root supplied by the CLI adapter for lossless
+    /// live registration (preserving non-UTF-8 Unix paths over IPC).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_root: Option<se_types::NativePath>,
     pub name: Option<String>,
+    /// Validated project name resolved by the CLI adapter (explicit or derived).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_name: Option<String>,
     #[serde(default = "main_agent")]
     pub agent: String,
     pub provider: Option<Provider>,
@@ -237,6 +244,9 @@ impl Validate for ProjectInit {
         }
         if let Some(value) = &self.name {
             name("name", value)?;
+        }
+        if let Some(value) = &self.resolved_name {
+            name("resolved_name", value)?;
         }
         name("agent", &self.agent)?;
         if let Some(model) = &self.model {
